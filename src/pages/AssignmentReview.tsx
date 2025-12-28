@@ -231,19 +231,24 @@ const AssignmentReview = () => {
 
   const handleDownloadFile = async (filePath: string, fileName: string) => {
     try {
-      const { data, error } = await supabase.functions.invoke('download-file', {
-        body: {
-          bucket: 'student-submissions',
-          filePath,
-          fileName
-        }
-      });
+      // Generar URL firmada directamente desde Storage
+      const { data, error } = await supabase.storage
+        .from('student-submissions')
+        .createSignedUrl(filePath, 60); // 1 minuto es suficiente para la descarga
 
-      if (error) throw error;
+      if (error) {
+        console.error('Storage error:', error);
+        throw error;
+      }
 
+      if (!data || !data.signedUrl) {
+        throw new Error('No se pudo generar la URL de descarga');
+      }
+
+      // Descargar el archivo
       const link = document.createElement('a');
       link.href = data.signedUrl;
-      link.download = data.fileName || fileName;
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -257,29 +262,71 @@ const AssignmentReview = () => {
 
   // ✅ NUEVO: abrir vista previa (sin descargar)
   const handlePreviewFile = async (file: PreviewFile) => {
+    console.log('=== handlePreviewFile called ===');
+    console.log('Full file object:', file);
+    console.log('File details:', {
+      filePath: file.filePath,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      fileSize: file.fileSize
+    });
+
+    // El path puede ser válido si:
+    // - Empieza con "feedback/" (archivos de retroalimentación)
+    // - Empieza con "submissions/" (archivos de estudiantes nuevos)
+    // - O contiene un UUID (formato viejo, aceptarlo por ahora)
+    const isValidPath = file.filePath && (
+      file.filePath.startsWith('feedback/') || 
+      file.filePath.startsWith('submissions/') ||
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//.test(file.filePath)
+    );
+
+    if (!isValidPath) {
+      console.error('❌ Path no reconocido:', file.filePath);
+      toast.error('Path de archivo no válido.');
+      return;
+    }
+
+    setPreviewLoading(true);
+    setPreviewFile(file);
+    setPreviewUrl('');
+    setPreviewOpen(true);
+
     try {
-      setPreviewLoading(true);
-      setPreviewFile(file);
-      setPreviewUrl('');
-      setPreviewOpen(true);
+      if (!file.filePath) {
+        throw new Error('No se especificó la ruta del archivo');
+      }
 
-      const { data, error } = await supabase.functions.invoke('download-file', {
-        body: {
-          bucket: 'student-submissions',
-          filePath: file.filePath,
-          fileName: file.fileName
-        }
-      });
+      console.log('✅ Path válido, requesting signed URL from storage...');
+      
+      // Generar URL firmada directamente desde Storage
+      const { data, error } = await supabase.storage
+        .from('student-submissions')
+        .createSignedUrl(file.filePath, 3600); // 1 hora de validez
 
-      if (error) throw error;
+      if (error) {
+        console.error('❌ Storage error:', error);
+        console.error('Attempted path:', file.filePath);
+        toast.error(`Error de storage: ${error.message}`);
+        throw error;
+      }
 
+      if (!data || !data.signedUrl) {
+        console.error('❌ No signed URL returned');
+        throw new Error('No se pudo generar la URL firmada');
+      }
+
+      console.log('✅ Signed URL generated:', data.signedUrl);
       setPreviewUrl(data.signedUrl);
-    } catch (error) {
-      console.error('Error previewing file:', error);
-      toast.error('No se pudo abrir la vista previa');
+      console.log('Preview URL set in state');
+      
+    } catch (error: any) {
+      console.error('❌ Error previewing file:', error);
+      toast.error(`No se pudo abrir: ${error?.message || 'Error desconocido'}`);
       setPreviewOpen(false);
     } finally {
       setPreviewLoading(false);
+      console.log('=== handlePreviewFile completed ===');
     }
   };
 
@@ -703,25 +750,77 @@ const AssignmentReview = () => {
                         {/* Mostrar archivos existentes guardados */}
                         {selectedSubmission.feedback_files && selectedSubmission.feedback_files.length > 0 && (
                           <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Archivos ya guardados:</p>
+                            <p className="text-xs font-medium text-muted-foreground">Archivos de retroalimentación guardados:</p>
                             {selectedSubmission.feedback_files.map((file: any, index: number) => {
                               const filePath = file.file_path || file.filePath;
                               const fileName = file.file_name || file.fileName;
                               const fileSize = file.file_size || file.fileSize;
+                              const mimeType = file.mime_type || file.mimeType || 'application/pdf';
+                              const isValidPath = filePath && filePath.startsWith('feedback/');
 
                               return (
                                 <div
                                   key={`existing-${index}`}
-                                  className="flex items-center gap-2 p-2 border rounded-lg bg-green-50 dark:bg-green-950/20"
+                                  className={`flex items-center gap-2 p-2 border rounded-lg ${
+                                    isValidPath 
+                                      ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800' 
+                                      : 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800'
+                                  }`}
                                 >
-                                  <FileText className="w-4 h-4 text-green-600 dark:text-green-400" />
+                                  <FileText className={`w-4 h-4 ${isValidPath ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`} />
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm font-medium truncate">{fileName}</p>
                                     {fileSize && <p className="text-xs text-muted-foreground">{formatKB(fileSize)}</p>}
+                                    {!isValidPath && <p className="text-xs text-red-600 dark:text-red-400">Archivo inválido - eliminar</p>}
                                   </div>
-                                  <Button variant="outline" size="sm" onClick={() => handleDownloadFile(filePath, fileName)}>
-                                    <Download className="w-4 h-4" />
-                                  </Button>
+                                  
+                                  {isValidPath ? (
+                                    <>
+                                      {/* Botón para ver/editar el PDF de feedback */}
+                                      <Button 
+                                        variant="outline" 
+                                        size="sm" 
+                                        onClick={() => handlePreviewFile({
+                                          filePath,
+                                          fileName,
+                                          mimeType,
+                                          fileSize
+                                        })}
+                                      >
+                                        <Eye className="w-4 h-4 mr-1" />
+                                        Editar
+                                      </Button>
+                                      <Button variant="outline" size="sm" onClick={() => handleDownloadFile(filePath, fileName)}>
+                                        <Download className="w-4 h-4" />
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <Button 
+                                      variant="destructive" 
+                                      size="sm"
+                                      onClick={async () => {
+                                        try {
+                                          // Eliminar de la base de datos
+                                          const updatedFiles = selectedSubmission.feedback_files.filter((_: any, i: number) => i !== index);
+                                          const { error } = await supabase
+                                            .from('assignment_submissions')
+                                            .update({ feedback_files: updatedFiles })
+                                            .eq('id', selectedSubmission.id);
+                                          
+                                          if (error) throw error;
+                                          
+                                          toast.success('Archivo inválido eliminado');
+                                          fetchAssignmentData();
+                                        } catch (error) {
+                                          console.error('Error removing file:', error);
+                                          toast.error('No se pudo eliminar el archivo');
+                                        }
+                                      }}
+                                    >
+                                      <X className="w-4 h-4" />
+                                      Eliminar
+                                    </Button>
+                                  )}
                                 </div>
                               );
                             })}
@@ -834,6 +933,8 @@ const AssignmentReview = () => {
                       fileName={previewFile.fileName}
                       mimeType={previewFile.mimeType}
                       submissionId={selectedSubmission.id}
+                      storageBucket="student-submissions"
+                      storagePath={previewFile.filePath}
                       onSaved={() => fetchAssignmentData()}
                       onClose={() => setPreviewOpen(false)}
                     />

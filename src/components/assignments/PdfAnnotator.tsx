@@ -8,8 +8,20 @@ import { toast } from "sonner";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
-// PDF-lib (para guardar PDF final sin descargar/subir manual)
-import { PDFDocument } from "pdf-lib";
+// Tipos para las anotaciones
+interface Point {
+  x: number;
+  y: number;
+}
+
+interface Stroke {
+  points: Point[];
+  color: string;
+  size: number;
+  tool: "pen" | "eraser";
+}
+
+type PageStrokes = Record<number, Stroke[]>;
 
 type Props = {
   pdfUrl: string; // signed url / public url
@@ -83,9 +95,10 @@ export default function PdfAnnotator({
   // dibujo
   const drawing = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
+  const currentStroke = useRef<Point[]>([]);
 
-  // ✅ overlays por página (dataURL PNG transparente)
-  const [pageOverlays, setPageOverlays] = useState<Record<number, string>>({});
+  // ✅ Guardar trazos por página (en lugar de dataURL)
+  const [pageStrokes, setPageStrokes] = useState<PageStrokes>({});
 
   // escala fija (para que overlay y base calcen)
   const SCALE = 1.35;
@@ -98,35 +111,68 @@ export default function PdfAnnotator({
   // ===== CARGA DEL PDF =====
   useEffect(() => {
     let cancelled = false;
+    let timeoutId: NodeJS.Timeout;
 
     async function load() {
       try {
         setLoading(true);
 
+        // Timeout de 30 segundos para evitar cuelgues
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('Timeout al cargar PDF')), 30000);
+        });
+
         // 1) intenta por URL
         try {
-          const buf = await fetchAsPdfBytes(pdfUrl);
+          const loadPromise = fetchAsPdfBytes(pdfUrl);
+          const buf = await Promise.race([loadPromise, timeoutPromise]) as ArrayBuffer;
           if (cancelled) return;
+          clearTimeout(timeoutId);
+          
+          // Verificar tamaño del PDF (máximo 10MB para evitar cuelgues)
+          const sizeMB = buf.byteLength / (1024 * 1024);
+          if (sizeMB > 10) {
+            toast.error(`El PDF es demasiado grande (${sizeMB.toFixed(1)}MB). Máximo 10MB para anotaciones.`);
+            setLoading(false);
+            return;
+          }
+          
           setPdfBytes(buf);
           return;
         } catch (e) {
+          clearTimeout(timeoutId);
           // 2) fallback: storage.download (más estable si tienes storagePath)
           if (!storagePath) throw e;
 
-          const { data, error } = await supabase.storage
+          const downloadPromise = supabase.storage
             .from(storageBucket)
             .download(storagePath);
+          
+          const { data, error } = await Promise.race([
+            downloadPromise, 
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout descargando PDF')), 30000))
+          ]) as any;
 
           if (error) throw error;
 
           const buf = await data.arrayBuffer();
           if (cancelled) return;
+          
+          // Verificar tamaño del PDF
+          const sizeMB = buf.byteLength / (1024 * 1024);
+          if (sizeMB > 10) {
+            toast.error(`El PDF es demasiado grande (${sizeMB.toFixed(1)}MB). Máximo 10MB para anotaciones.`);
+            setLoading(false);
+            return;
+          }
+          
           setPdfBytes(buf);
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("PDF load error:", err);
-        toast.error("No se pudo cargar el PDF para anotar");
+        toast.error(`No se pudo cargar el PDF: ${err?.message || 'Error desconocido'}`);
       } finally {
+        clearTimeout(timeoutId);
         if (!cancelled) setLoading(false);
       }
     }
@@ -134,6 +180,7 @@ export default function PdfAnnotator({
     load();
     return () => {
       cancelled = true;
+      clearTimeout(timeoutId);
     };
   }, [pdfUrl, storageBucket, storagePath]);
 
@@ -188,17 +235,32 @@ export default function PdfAnnotator({
         const bctx = base.getContext("2d")!;
         await page.render({ canvasContext: bctx, viewport }).promise;
 
-        // restore overlay (si existe)
+        // restore strokes (redibujar desde el array de strokes)
         const octx = overlay.getContext("2d")!;
         octx.clearRect(0, 0, overlay.width, overlay.height);
 
-        const saved = pageOverlays[pageNum];
-        if (saved) {
-          const img = new Image();
-          img.onload = () => {
-            octx.drawImage(img, 0, 0);
-          };
-          img.src = saved;
+        const strokes = pageStrokes[pageNum] || [];
+        for (const stroke of strokes) {
+          if (stroke.points.length < 2) continue;
+
+          octx.lineCap = "round";
+          octx.lineJoin = "round";
+          octx.lineWidth = stroke.size;
+
+          if (stroke.tool === "eraser") {
+            octx.globalCompositeOperation = "destination-out";
+            octx.strokeStyle = "rgba(0,0,0,1)";
+          } else {
+            octx.globalCompositeOperation = "source-over";
+            octx.strokeStyle = stroke.color;
+          }
+
+          octx.beginPath();
+          octx.moveTo(stroke.points[0].x, stroke.points[0].y);
+          for (let i = 1; i < stroke.points.length; i++) {
+            octx.lineTo(stroke.points[i].x, stroke.points[i].y);
+          }
+          octx.stroke();
         }
       } catch (err) {
         console.error("Render page error:", err);
@@ -210,7 +272,7 @@ export default function PdfAnnotator({
     return () => {
       cancelled = true;
     };
-  }, [pdfDocJs, pageNum, pageOverlays]);
+  }, [pdfDocJs, pageNum, pageStrokes]);
 
   // ===== helpers dibujo =====
   const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -218,15 +280,29 @@ export default function PdfAnnotator({
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
-  const saveOverlayOfCurrentPage = () => {
-    if (!overlayCanvasRef.current) return;
-    const dataUrl = overlayCanvasRef.current.toDataURL("image/png"); // transparente
-    setPageOverlays((prev) => ({ ...prev, [pageNum]: dataUrl }));
+  const saveCurrentStroke = () => {
+    if (currentStroke.current.length < 2) return;
+
+    const newStroke: Stroke = {
+      points: [...currentStroke.current],
+      color,
+      size,
+      tool,
+    };
+
+    setPageStrokes((prev) => ({
+      ...prev,
+      [pageNum]: [...(prev[pageNum] || []), newStroke],
+    }));
+
+    currentStroke.current = [];
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     drawing.current = true;
-    last.current = getPos(e);
+    const pos = getPos(e);
+    last.current = pos;
+    currentStroke.current = [pos];
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -236,6 +312,8 @@ export default function PdfAnnotator({
     const p = getPos(e);
     const prev = last.current;
     if (!prev) return;
+
+    currentStroke.current.push(p);
 
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -258,17 +336,18 @@ export default function PdfAnnotator({
   };
 
   const onPointerUp = () => {
+    if (drawing.current) {
+      saveCurrentStroke();
+    }
     drawing.current = false;
     last.current = null;
-    // ✅ cada vez que termina un trazo, guardamos overlay de esa página
-    saveOverlayOfCurrentPage();
   };
 
   const clearOverlay = () => {
     if (!overlayCanvasRef.current) return;
     const ctx = overlayCanvasRef.current.getContext("2d")!;
     ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-    setPageOverlays((prev) => {
+    setPageStrokes((prev) => {
       const copy = { ...prev };
       delete copy[pageNum];
       return copy;
@@ -276,119 +355,159 @@ export default function PdfAnnotator({
   };
 
   const goPrev = () => {
-    // guardo antes de mover
-    saveOverlayOfCurrentPage();
     setPageNum((p) => Math.max(1, p - 1));
   };
 
+
   const goNext = () => {
-    saveOverlayOfCurrentPage();
     setPageNum((p) => Math.min(pageCount, p + 1));
   };
 
-  // ===== GUARDAR PDF COMPLETO (todas las páginas) =====
+  // ===== GUARDAR PDF COMPLETO (enviar a Edge Function) =====
   const savePdfComplete = async () => {
+    const toastId = "savepdf";
     try {
-      toast.loading("Generando PDF con anotaciones...", { id: "savepdf" });
-
-      // 1) Descargar PDF original
-      let originalArrayBuffer: ArrayBuffer;
-
-      if (storagePath) {
-        const { data, error } = await supabase.storage
-          .from(storageBucket)
-          .download(storagePath);
-
-        if (error) throw error;
-        originalArrayBuffer = await data.arrayBuffer();
-      } else {
-        const res = await fetch(pdfUrl, { mode: "cors" });
-        if (!res.ok) throw new Error(`fetch original pdf failed: ${res.status}`);
-        originalArrayBuffer = await res.arrayBuffer();
+      // Verificar que haya anotaciones
+      const totalStrokes = Object.values(pageStrokes).reduce((sum, strokes) => sum + strokes.length, 0);
+      if (totalStrokes === 0) {
+        toast.error("No hay anotaciones para guardar", { id: toastId });
+        return;
       }
 
-      // 2) Abrir PDF con pdf-lib
-      const out = await PDFDocument.load(originalArrayBuffer);
+      toast.loading("Renderizando anotaciones...", { id: toastId });
 
-      // 3) Incrustar overlays por página
-      const pages = out.getPages();
-
-      for (const [pStr, overlayDataUrl] of Object.entries(pageOverlays)) {
-        const pNum = Number(pStr);
-        if (!pNum || pNum < 1 || pNum > pages.length) continue;
-        if (!overlayDataUrl) continue;
-
-        const pngBytes = await fetch(overlayDataUrl).then((r) => r.arrayBuffer());
-        const png = await out.embedPng(pngBytes);
-
-        const page = pages[pNum - 1];
-        const { width, height } = page.getSize();
-
-        page.drawImage(png, {
-          x: 0,
-          y: 0,
-          width,
-          height,
-          opacity: 1,
-        });
+      // Renderizar cada página con anotaciones como PNG
+      const pageImages: Record<string, string> = {};
+      
+      for (const [pageNumStr, strokes] of Object.entries(pageStrokes)) {
+        if (!strokes || strokes.length === 0) continue;
+        
+        const pageNum = parseInt(pageNumStr);
+        const page = await pdfDocJs.getPage(pageNum);
+        const viewport = page.getViewport({ scale: SCALE });
+        
+        // Crear canvas temporal para renderizar esta página
+        const tempCanvas = document.createElement("canvas");
+        tempCanvas.width = viewport.width;
+        tempCanvas.height = viewport.height;
+        const tempCtx = tempCanvas.getContext("2d");
+        if (!tempCtx) continue;
+        
+        // Renderizar PDF en el canvas
+        await page.render({ canvasContext: tempCtx, viewport }).promise;
+        
+        // Dibujar las anotaciones encima
+        for (const stroke of strokes) {
+          if (stroke.points.length < 2) continue;
+          
+          tempCtx.lineCap = "round";
+          tempCtx.lineJoin = "round";
+          tempCtx.lineWidth = stroke.size;
+          
+          if (stroke.tool === "eraser") {
+            tempCtx.globalCompositeOperation = "destination-out";
+            tempCtx.strokeStyle = "rgba(0,0,0,1)";
+          } else {
+            tempCtx.globalCompositeOperation = "source-over";
+            tempCtx.strokeStyle = stroke.color;
+          }
+          
+          tempCtx.beginPath();
+          tempCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+          for (let i = 1; i < stroke.points.length; i++) {
+            tempCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
+          }
+          tempCtx.stroke();
+        }
+        
+        // Convertir a PNG dataURL
+        pageImages[pageNumStr] = tempCanvas.toDataURL("image/png");
       }
 
-      // 4) Guardar bytes del PDF final
-      const outBytes = await out.save();
-      const blob = new Blob([outBytes], { type: "application/pdf" });
+      toast.loading("Enviando al servidor...", { id: toastId });
 
-      // 5) Generar nombre seguro y ruta
-      const safeOriginal = safeKeyName(fileName || "archivo.pdf");
-      const teacherFileName = `annotated_${Date.now()}_${safeOriginal}`;
-      const teacherPath = `feedback/${teacherFileName}`;
+      const requestBody = {
+        storageBucket,
+        storagePath,
+        pdfUrl: !storagePath ? pdfUrl : undefined,
+        fileName,
+        submissionId,
+        pageImages,
+      };
 
-      // 6) Subir a Storage
-      const { error: uploadError } = await supabase.storage
-        .from(storageBucket)
-        .upload(teacherPath, blob, {
-          contentType: "application/pdf",
-          upsert: true,
+      console.log("Sending to Edge Function:", { 
+        fileName, 
+        submissionId, 
+        pageCount: Object.keys(pageImages).length
+      });
+
+      // Llamar a la Edge Function
+      const { data, error } = await supabase.functions.invoke("annotate-pdf", {
+        body: requestBody,
+      });
+
+      console.log("Edge Function response:", { data, error });
+
+      if (error) {
+        // Intentar leer el cuerpo de la respuesta para obtener el mensaje de error específico
+        let errorMessage = error.message;
+        
+        if (error.context && error.context instanceof Response) {
+          try {
+            const responseText = await error.context.text();
+            console.error("Edge Function response body:", responseText);
+            
+            try {
+              const responseJson = JSON.parse(responseText);
+              if (responseJson.error) {
+                errorMessage = responseJson.error;
+              }
+              console.error("Edge Function error JSON:", responseJson);
+            } catch (e) {
+              console.error("Could not parse error as JSON");
+            }
+          } catch (e) {
+            console.error("Could not read response body:", e);
+          }
+        }
+        
+        console.error("Edge Function error details:", {
+          message: error.message,
+          name: error.name,
+          errorMessage,
+          data
         });
+        
+        throw new Error(`Edge Function error: ${errorMessage}`);
+      }
 
-      if (uploadError) throw uploadError;
+      if (!data) {
+        throw new Error("No data returned from Edge Function");
+      }
 
-      // 7) Guardar en Base de Datos
-      const { data: subRow, error: subErr } = await supabase
-        .from("assignment_submissions")
-        .select("feedback_files")
-        .eq("id", submissionId)
-        .single();
+      if (!data.success) {
+        throw new Error(data.error || "Error desconocido al procesar PDF");
+      }
 
-      if (subErr) throw subErr;
+      const sizeMB = (data.fileSize / (1024 * 1024)).toFixed(2);
+      toast.success(
+        `✅ PDF guardado exitosamente con ${data.annotatedCount} página(s) anotada(s) (${sizeMB}MB). El alumno puede verlo ahora.`,
+        { 
+          id: toastId,
+          duration: 5000 
+        }
+      );
 
-      const prev = Array.isArray((subRow as any)?.feedback_files)
-        ? (subRow as any).feedback_files
-        : [];
-
-      const next = [
-        ...prev,
-        {
-          bucket: storageBucket,
-          path: teacherPath,
-          fileName: teacherFileName,
-          mimeType: "application/pdf",
-          createdAt: new Date().toISOString(),
-        },
-      ];
-
-      const { error: updErr } = await supabase
-        .from("assignment_submissions")
-        .update({ feedback_files: next })
-        .eq("id", submissionId);
-
-      if (updErr) throw updErr;
-
-      toast.success("PDF corregido guardado ✅", { id: "savepdf" });
+      // NO limpiar las anotaciones - el profesor puede seguir viéndolas y editando
+      // Las anotaciones se mantienen en pageStrokes para que el profesor pueda continuar editando
       
       if (onSaved) onSaved();
-      
     } catch (err: any) {
-      toast.error(`No se pudo guardar: ${err?.message || "Error desconocido"}`, { id: "savepdf" });
+      console.error("Save PDF error:", err);
+      toast.error(`❌ Error al guardar: ${err?.message || "Error desconocido"}`, {
+        id: toastId,
+        duration: 7000,
+      });
     }
   };
     
@@ -477,3 +596,4 @@ export default function PdfAnnotator({
     </div>
   );
 }
+

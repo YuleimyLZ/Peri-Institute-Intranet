@@ -271,7 +271,7 @@ const ExamTaking = () => {
 
   return (
     <DashboardLayout>
-      <div className="p-6 max-w-4xl mx-auto space-y-6">
+      <div className="p-4 sm:p-6 max-w-full lg:max-w-6xl mx-auto space-y-6">
         {/* Header with timer */}
         <Card className="bg-gradient-card shadow-card border-0 sticky top-4 z-10">
           <CardHeader>
@@ -315,12 +315,12 @@ const ExamTaking = () => {
           {questions.map((question, index) => (
             <Card key={question.id} className="bg-gradient-card shadow-card border-0">
               <CardHeader>
-                <CardTitle className="text-lg">
+                <CardTitle className="text-base sm:text-lg">
                   Pregunta {index + 1} ({question.points} {question.points === 1 ? 'punto' : 'puntos'})
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-foreground">{question.question_text}</p>
+                <p className="text-sm sm:text-base text-foreground whitespace-pre-wrap leading-relaxed">{question.question_text}</p>
 
                 {question.question_type === 'multiple_choice' && question.options && (
                   <RadioGroup
@@ -328,10 +328,11 @@ const ExamTaking = () => {
                     onValueChange={(value) => handleAnswerChange(question.id, value)}
                   >
                     {question.options.map((option, optIndex) => (
-                      <div key={optIndex} className="flex items-center space-x-2">
-                        <RadioGroupItem value={option} id={`q${question.id}-opt${optIndex}`} />
-                        <Label htmlFor={`q${question.id}-opt${optIndex}`} className="cursor-pointer">
-                          {String.fromCharCode(65 + optIndex)}. {option}
+                      <div key={optIndex} className="flex items-start space-x-3 p-3 rounded-lg hover:bg-accent/50 transition-colors">
+                        <RadioGroupItem value={option} id={`q${question.id}-opt${optIndex}`} className="mt-0.5" />
+                        <Label htmlFor={`q${question.id}-opt${optIndex}`} className="cursor-pointer flex-1 text-sm sm:text-base leading-relaxed">
+                          <span className="font-semibold mr-2">{String.fromCharCode(65 + optIndex)}.</span>
+                          {option}
                         </Label>
                       </div>
                     ))}
@@ -343,13 +344,13 @@ const ExamTaking = () => {
                     value={answers[question.id] || ''}
                     onValueChange={(value) => handleAnswerChange(question.id, value)}
                   >
-                    <div className="flex items-center space-x-2">
+                    <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-accent/50 transition-colors">
                       <RadioGroupItem value="true" id={`q${question.id}-true`} />
-                      <Label htmlFor={`q${question.id}-true`} className="cursor-pointer">Verdadero</Label>
+                      <Label htmlFor={`q${question.id}-true`} className="cursor-pointer text-sm sm:text-base">Verdadero</Label>
                     </div>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex items-center space-x-3 p-3 rounded-lg hover:bg-accent/50 transition-colors">
                       <RadioGroupItem value="false" id={`q${question.id}-false`} />
-                      <Label htmlFor={`q${question.id}-false`} className="cursor-pointer">Falso</Label>
+                      <Label htmlFor={`q${question.id}-false`} className="cursor-pointer text-sm sm:text-base">Falso</Label>
                     </div>
                   </RadioGroup>
                 )}
