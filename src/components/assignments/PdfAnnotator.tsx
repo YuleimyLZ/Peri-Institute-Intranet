@@ -498,10 +498,16 @@ export default function PdfAnnotator({
         }
       );
 
-      // NO limpiar las anotaciones - el profesor puede seguir viéndolas y editando
-      // Las anotaciones se mantienen en pageStrokes para que el profesor pueda continuar editando
+      // ✅ Limpiar las anotaciones después de guardar exitosamente
+      // Esto permite que el profesor pueda abrir de nuevo y hacer correcciones adicionales sin conflictos
+      setPageStrokes({});
       
       if (onSaved) onSaved();
+      
+      // Cerrar el modal automáticamente después de guardar
+      if (onClose) {
+        setTimeout(() => onClose(), 1000);
+      }
     } catch (err: any) {
       console.error("Save PDF error:", err);
       toast.error(`❌ Error al guardar: ${err?.message || "Error desconocido"}`, {

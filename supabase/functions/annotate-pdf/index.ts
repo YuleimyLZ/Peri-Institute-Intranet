@@ -122,23 +122,41 @@ serve(async (req) => {
     const annotatedPdfBytes = await pdfDoc.save();
 
     // 5. Generar nombre y subir a Storage
-    // Si el archivo original YA es un archivo de feedback (comienza con "feedback/"),
-    // reutilizar el mismo nombre para sobrescribirlo
+    // SIEMPRE crear un nuevo archivo con timestamp para evitar problemas de caché
+    // y para que el usuario vea claramente que hay una nueva versión
     let annotatedPath: string;
     let annotatedFileName: string;
     
+    // Extraer el nombre base del archivo (sin la carpeta feedback/ y sin el prefijo annotated_)
+    let baseFileName = fileName;
+    
     if (storagePath && storagePath.startsWith("feedback/")) {
-      // Estamos editando un archivo de feedback existente - mantener el mismo nombre
-      annotatedPath = storagePath;
-      annotatedFileName = storagePath.split("/").pop() || fileName;
-      console.log("Reusing existing feedback file path:", annotatedPath);
-    } else {
-      // Es un archivo nuevo del estudiante - crear nuevo nombre en feedback/
-      const safeFileName = fileName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "_");
-      annotatedFileName = `annotated_${Date.now()}_${safeFileName}`;
-      annotatedPath = `feedback/${annotatedFileName}`;
-      console.log("Creating new feedback file:", annotatedPath);
+      // Si estamos editando un feedback existente, extraer el nombre base
+      const pathParts = storagePath.split("/");
+      const existingFileName = pathParts[pathParts.length - 1];
+      
+      // Remover el prefijo "annotated_TIMESTAMP_" si existe
+      const match = existingFileName.match(/^annotated_\d+_(.+)$/);
+      if (match) {
+        baseFileName = match[1]; // Mantener solo el nombre original
+      } else {
+        baseFileName = existingFileName;
+      }
+      
+      console.log("Editing existing feedback, extracted base name:", baseFileName);
     }
+    
+    // Crear nuevo nombre con timestamp actualizado
+    const safeFileName = baseFileName
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, "_")
+      .replace(/[^a-zA-Z0-9._-]/g, "_");
+    
+    annotatedFileName = `annotated_${Date.now()}_${safeFileName}`;
+    annotatedPath = `feedback/${submissionId}/${annotatedFileName}`;
+    
+    console.log("Creating new feedback file:", { annotatedPath, baseFileName, annotatedFileName });
 
     console.log("Uploading to storage:", { storageBucket, annotatedPath, size: annotatedPdfBytes.byteLength });
 
@@ -146,7 +164,7 @@ serve(async (req) => {
       .from(storageBucket)
       .upload(annotatedPath, annotatedPdfBytes, {
         contentType: "application/pdf",
-        upsert: true,
+        upsert: false, // No sobrescribir, siempre crear nuevo archivo
       });
 
     if (uploadError) {
