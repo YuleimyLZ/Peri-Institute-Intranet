@@ -22,6 +22,7 @@ import VirtualClassrooms from "./pages/VirtualClassrooms";
 import VirtualClassroomDetail from "./pages/VirtualClassroomDetail";
 import VirtualClassroomCourses from "./pages/VirtualClassroomCourses";
 import TutorDashboard from "./pages/TutorDashboard";
+import DirectivoDashboard from "./pages/DirectivoDashboard";
 import Calendar from "./pages/Calendar";
 import NotFound from "./pages/NotFound";
 import AdminBulkStudentImport from "./pages/AdminBulkStudentImport";
@@ -122,6 +123,11 @@ const App = () => (
             <Route path="/tutor-dashboard" element={
               <ProtectedRoute>
                 <TutorDashboard />
+              </ProtectedRoute>
+            } />
+            <Route path="/directivo-dashboard" element={
+              <ProtectedRoute>
+                <DirectivoDashboard />
               </ProtectedRoute>
             } />
             <Route path="/student/:studentId" element={

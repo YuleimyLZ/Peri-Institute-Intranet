@@ -1,0 +1,1255 @@
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertCircle,
+  CheckCircle,
+  Clock,
+  FileText,
+  GraduationCap,
+  Search,
+  TrendingUp,
+  Users,
+  AlertTriangle,
+  BookOpen,
+  Calendar,
+  Award,
+  Download,
+  Mail,
+  Phone,
+  Star,
+  Flag,
+  TrendingDown,
+  Minus,
+  Eye,
+  EyeOff,
+  HelpCircle,
+  Trophy,
+  ArrowUp,
+  ArrowDown,
+  UserCheck,
+} from "lucide-react";
+import { toast } from "sonner";
+
+interface TeacherMetrics {
+  teacher_id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  is_active: boolean;
+  total_courses: number;
+  total_assignments: number;
+  published_assignments: number;
+  assignments_last_week: number;
+  assignments_last_month: number;
+  pending_grading: number;
+  graded_submissions: number;
+  total_exams: number;
+  attendance_records: number;
+  last_grading_date: string | null;
+  alert_level: "high" | "medium" | "low" | null;
+  alert_reasons: string[];
+}
+
+interface GradeStats {
+  AD: number;
+  A: number;
+  B: number;
+  C: number;
+}
+
+const DirectivoDashboard = () => {
+  const [teachers, setTeachers] = useState<TeacherMetrics[]>([]);
+  const [filteredTeachers, setFilteredTeachers] = useState<TeacherMetrics[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedTeacher, setSelectedTeacher] = useState<TeacherMetrics | null>(null);
+  const [gradeStats, setGradeStats] = useState<GradeStats | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<"all" | "active" | "needs-attention">("all");
+  const [selectedSeverity, setSelectedSeverity] = useState<string>("all");
+  const [isSimpleMode, setIsSimpleMode] = useState(true);
+  const [showCalendar, setShowCalendar] = useState(false);
+
+  useEffect(() => {
+    fetchTeacherData();
+  }, []);
+
+  useEffect(() => {
+    filterTeachers();
+  }, [teachers, searchTerm, activeFilter, selectedSeverity]);
+
+  const fetchTeacherData = async () => {
+    setIsLoading(true);
+    try {
+      // Fetch all teachers
+      const { data: teachersData, error: teachersError } = await supabase
+        .from("profiles")
+        .select("id, first_name, last_name, email, is_active")
+        .in("role", ["teacher", "tutor"])
+        .order("last_name");
+
+      if (teachersError) throw teachersError;
+
+      const metricsPromises = teachersData.map(async (teacher) => {
+        // Get teacher's courses
+        const { data: courses } = await supabase
+          .from("courses")
+          .select("id")
+          .eq("teacher_id", teacher.id);
+
+        const courseIds = courses?.map((c) => c.id) || [];
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        const monthAgo = new Date();
+        monthAgo.setDate(monthAgo.getDate() - 30);
+
+        // Get assignments metrics
+        const { data: assignments } = await supabase
+          .from("assignments")
+          .select("id, is_published, created_at")
+          .in("course_id", courseIds);
+
+        const totalAssignments = assignments?.length || 0;
+        const publishedAssignments = assignments?.filter((a) => a.is_published).length || 0;
+        const assignmentsLastWeek = assignments?.filter((a) => new Date(a.created_at) >= weekAgo).length || 0;
+        const assignmentsLastMonth = assignments?.filter((a) => new Date(a.created_at) >= monthAgo).length || 0;
+
+        // Get submissions metrics
+        const assignmentIds = assignments?.map((a) => a.id) || [];
+        const { data: submissions } = await supabase
+          .from("assignment_submissions")
+          .select("id, graded_at, submitted_at")
+          .in("assignment_id", assignmentIds);
+
+        const pendingGrading = submissions?.filter((s) => !s.graded_at && s.submitted_at).length || 0;
+        const gradedSubmissions = submissions?.filter((s) => s.graded_at).length || 0;
+        const lastGrading = submissions
+          ?.filter((s) => s.graded_at)
+          .sort((a, b) => new Date(b.graded_at!).getTime() - new Date(a.graded_at!).getTime())[0];
+
+        // Get exams
+        const { count: examsCount } = await supabase
+          .from("exams")
+          .select("*", { count: "exact", head: true })
+          .in("course_id", courseIds);
+
+        // Get attendance records
+        const { count: attendanceCount } = await supabase
+          .from("attendance")
+          .select("*", { count: "exact", head: true })
+          .eq("recorded_by", teacher.id);
+
+        // Calculate alerts
+        const alertReasons: string[] = [];
+        let alertLevel: "high" | "medium" | "low" | null = null;
+
+        if (pendingGrading > 10 || assignmentsLastMonth === 0) {
+          alertLevel = "high";
+        } else if (pendingGrading > 5 || assignmentsLastWeek === 0) {
+          alertLevel = "medium";
+        } else if (pendingGrading > 0) {
+          alertLevel = "low";
+        }
+
+        if (pendingGrading > 5) {
+          alertReasons.push(`${pendingGrading} tareas pendientes de calificar`);
+        }
+        if (assignmentsLastMonth === 0) {
+          alertReasons.push("Sin crear tareas este mes");
+        }
+        if (assignmentsLastWeek === 0 && totalAssignments > 0) {
+          alertReasons.push("Sin actividad esta semana");
+        }
+
+        return {
+          teacher_id: teacher.id,
+          first_name: teacher.first_name,
+          last_name: teacher.last_name,
+          email: teacher.email,
+          is_active: teacher.is_active,
+          total_courses: courseIds.length,
+          total_assignments: totalAssignments,
+          published_assignments: publishedAssignments,
+          assignments_last_week: assignmentsLastWeek,
+          assignments_last_month: assignmentsLastMonth,
+          pending_grading: pendingGrading,
+          graded_submissions: gradedSubmissions,
+          total_exams: examsCount || 0,
+          attendance_records: attendanceCount || 0,
+          last_grading_date: lastGrading?.graded_at || null,
+          alert_level: alertLevel,
+          alert_reasons: alertReasons,
+        };
+      });
+
+      const metrics = await Promise.all(metricsPromises);
+      setTeachers(metrics);
+    } catch (error: any) {
+      toast.error("Error al cargar los datos de profesores");
+      console.error(error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const filterTeachers = () => {
+    let filtered = [...teachers];
+
+    // Search filter
+    if (searchTerm) {
+      filtered = filtered.filter(
+        (t) =>
+          t.first_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          t.last_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          t.email.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    }
+
+    // Active filter
+    if (activeFilter === "active") {
+      filtered = filtered.filter((t) => t.is_active);
+    } else if (activeFilter === "needs-attention") {
+      filtered = filtered.filter((t) => t.alert_level !== null);
+    }
+
+    // Severity filter
+    if (selectedSeverity !== "all") {
+      filtered = filtered.filter((t) => t.alert_level === selectedSeverity);
+    }
+
+    setFilteredTeachers(filtered);
+  };
+
+  const fetchTeacherDetails = async (teacher: TeacherMetrics) => {
+    setSelectedTeacher(teacher);
+
+    // Fetch grade distribution
+    try {
+      const { data: courses } = await supabase
+        .from("courses")
+        .select("id")
+        .eq("teacher_id", teacher.teacher_id);
+
+      const courseIds = courses?.map((c) => c.id) || [];
+      const { data: assignments } = await supabase
+        .from("assignments")
+        .select("id")
+        .in("course_id", courseIds);
+
+      const assignmentIds = assignments?.map((a) => a.id) || [];
+      const { data: submissions } = await supabase
+        .from("assignment_submissions")
+        .select("score")
+        .in("assignment_id", assignmentIds)
+        .not("score", "is", null);
+
+      const grades: GradeStats = { AD: 0, A: 0, B: 0, C: 0 };
+      submissions?.forEach((s) => {
+        const score = Number(s.score);
+        if (score >= 18) grades.AD++;
+        else if (score >= 14) grades.A++;
+        else if (score >= 11) grades.B++;
+        else grades.C++;
+      });
+
+      setGradeStats(grades);
+    } catch (error) {
+      console.error("Error fetching teacher details:", error);
+    }
+  };
+
+  // Funciones auxiliares para las nuevas funcionalidades
+  const getStatusColor = (teacher: TeacherMetrics) => {
+    if (!teacher.is_active) return "bg-gray-400";
+    if (teacher.alert_level === "high") return "bg-red-500";
+    if (teacher.alert_level === "medium") return "bg-yellow-500";
+    if (teacher.pending_grading > 10) return "bg-orange-500";
+    return "bg-green-500";
+  };
+
+  const getStatusText = (teacher: TeacherMetrics) => {
+    if (!teacher.is_active) return "Inactivo";
+    if (teacher.alert_level === "high") return "Requiere Atención Urgente";
+    if (teacher.alert_level === "medium") return "Necesita Seguimiento";
+    if (teacher.pending_grading > 10) return "Atención Recomendada";
+    return "Desempeño Normal";
+  };
+
+  const getTopPerformers = () => {
+    return [...teachers]
+      .filter((t) => t.is_active)
+      .sort((a, b) => {
+        const scoreA = a.graded_submissions - a.pending_grading + a.assignments_last_month * 2;
+        const scoreB = b.graded_submissions - b.pending_grading + b.assignments_last_month * 2;
+        return scoreB - scoreA;
+      })
+      .slice(0, 3);
+  };
+
+  const getNeedsAttention = () => {
+    return [...teachers]
+      .filter((t) => t.alert_level === "high" || t.alert_level === "medium" || t.pending_grading > 10)
+      .sort((a, b) => {
+        const priorityA = a.alert_level === "high" ? 3 : a.alert_level === "medium" ? 2 : 1;
+        const priorityB = b.alert_level === "high" ? 3 : b.alert_level === "medium" ? 2 : 1;
+        return priorityB - priorityA;
+      })
+      .slice(0, 3);
+  };
+
+  const exportToPDF = () => {
+    toast.info("Generando reporte PDF... (Funcionalidad en desarrollo)");
+    // Implementación futura con jsPDF o similar
+  };
+
+  const sendReminder = (teacherId: string, teacherName: string) => {
+    toast.success(`Recordatorio enviado a ${teacherName}`);
+    // Implementación futura con envío de email
+  };
+
+  const getTrendIcon = (current: number, previous: number) => {
+    if (current > previous) return <ArrowUp className="h-4 w-4 text-green-500" />;
+    if (current < previous) return <ArrowDown className="h-4 w-4 text-red-500" />;
+    return <Minus className="h-4 w-4 text-gray-400" />;
+  };
+
+  const getTrendPercentage = (current: number, previous: number) => {
+    if (previous === 0) return current > 0 ? "+100%" : "0%";
+    const change = ((current - previous) / previous) * 100;
+    return change >= 0 ? `+${change.toFixed(0)}%` : `${change.toFixed(0)}%`;
+  };
+
+  const getSeverityColor = (severity: string | null) => {
+    switch (severity) {
+      case "high":
+        return "destructive";
+      case "medium":
+        return "default";
+      case "low":
+        return "secondary";
+      default:
+        return "outline";
+    }
+  };
+
+  const getSeverityLabel = (severity: string | null) => {
+    switch (severity) {
+      case "high":
+        return "Urgente";
+      case "medium":
+        return "Atención";
+      case "low":
+        return "Revisar";
+      default:
+        return "";
+    }
+  };
+
+  // Calculate summary statistics
+  const stats = {
+    totalTeachers: teachers.length,
+    activeTeachers: teachers.filter((t) => t.is_active).length,
+    teachersWithAlerts: teachers.filter((t) => t.alert_level !== null).length,
+    highPriorityAlerts: teachers.filter((t) => t.alert_level === "high").length,
+    avgPendingGrading:
+      teachers.length > 0
+        ? Math.round(teachers.reduce((sum, t) => sum + t.pending_grading, 0) / teachers.length)
+        : 0,
+    totalPendingGrading: teachers.reduce((sum, t) => sum + t.pending_grading, 0),
+    totalAssignmentsWeek: teachers.reduce((sum, t) => sum + t.assignments_last_week, 0),
+    totalAssignmentsMonth: teachers.reduce((sum, t) => sum + t.assignments_last_month, 0),
+    totalExams: teachers.reduce((sum, t) => sum + t.total_exams, 0),
+  };
+
+  if (isLoading) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Header con botones de acción */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-4xl font-bold">📊 Panel de Supervisión Docente</h1>
+            <p className="text-lg text-muted-foreground mt-2">
+              Monitoreo y análisis de actividad de profesores
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => setIsSimpleMode(!isSimpleMode)} variant="outline" size="lg">
+              {isSimpleMode ? <Eye className="mr-2 h-5 w-5" /> : <EyeOff className="mr-2 h-5 w-5" />}
+              {isSimpleMode ? "Vista Avanzada" : "Vista Simple"}
+            </Button>
+            <Button onClick={exportToPDF} variant="outline" size="lg">
+              <Download className="mr-2 h-5 w-5" />
+              Exportar PDF
+            </Button>
+            <Button onClick={fetchTeacherData} variant="default" size="lg">
+              <TrendingUp className="mr-2 h-5 w-5" />
+              Actualizar
+            </Button>
+          </div>
+        </div>
+
+        {/* Resumen Ejecutivo - Top destacado */}
+        <Card className="border-2 border-primary shadow-lg">
+          <CardHeader>
+            <CardTitle className="text-2xl flex items-center gap-2">
+              <Trophy className="h-6 w-6 text-yellow-500" />
+              📋 Resumen Ejecutivo
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* Estado General */}
+            <div className="grid gap-6 md:grid-cols-3">
+              <Card className="bg-gradient-to-br from-green-50 to-green-100 border-green-300">
+                <CardHeader>
+                  <CardTitle className="text-lg">Estado General</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-5xl font-bold text-green-700">
+                    {Math.round((stats.activeTeachers / stats.totalTeachers) * 100)}%
+                  </div>
+                  <p className="text-base text-green-800 mt-2">Profesores Activos</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {stats.activeTeachers} de {stats.totalTeachers} profesores
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-gradient-to-br from-blue-50 to-blue-100 border-blue-300">
+                <CardHeader>
+                  <CardTitle className="text-lg">Tareas del Mes</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-5xl font-bold text-blue-700">
+                    {stats.totalAssignmentsMonth}
+                  </div>
+                  <div className="flex items-center gap-2 mt-2">
+                    {getTrendIcon(stats.totalAssignmentsMonth, stats.totalAssignmentsWeek * 4)}
+                    <span className="text-sm">
+                      {getTrendPercentage(stats.totalAssignmentsMonth, stats.totalAssignmentsWeek * 4)}
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className={`bg-gradient-to-br ${stats.highPriorityAlerts > 0 ? 'from-red-50 to-red-100 border-red-300' : 'from-green-50 to-green-100 border-green-300'}`}>
+                <CardHeader>
+                  <CardTitle className="text-lg">Alertas Urgentes</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className={`text-5xl font-bold ${stats.highPriorityAlerts > 0 ? 'text-red-700' : 'text-green-700'}`}>
+                    {stats.highPriorityAlerts}
+                  </div>
+                  <p className={`text-base mt-2 ${stats.highPriorityAlerts > 0 ? 'text-red-800' : 'text-green-800'}`}>
+                    {stats.highPriorityAlerts > 0 ? 'Requieren Atención' : '¡Todo en Orden!'}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Top 3 Destacados y Top 3 Necesitan Atención */}
+            <div className="grid gap-6 md:grid-cols-2">
+              {/* Top 3 Destacados */}
+              <Card className="border-green-300 bg-green-50">
+                <CardHeader>
+                  <CardTitle className="text-xl flex items-center gap-2">
+                    <Star className="h-6 w-6 text-yellow-500 fill-yellow-500" />
+                    ⭐ Profesores Destacados
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {getTopPerformers().map((teacher, idx) => (
+                    <div key={teacher.teacher_id} className="flex items-center gap-4 p-4 bg-white rounded-lg shadow">
+                      <div className="flex items-center justify-center w-12 h-12 rounded-full bg-yellow-500 text-white font-bold text-xl">
+                        {idx + 1}
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-lg font-bold">
+                          {teacher.first_name} {teacher.last_name}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          {teacher.graded_submissions} tareas calificadas • {teacher.assignments_last_month} tareas este mes
+                        </p>
+                      </div>
+                      <Trophy className="h-8 w-8 text-yellow-500" />
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              {/* Top 3 Necesitan Atención */}
+              <Card className="border-orange-300 bg-orange-50">
+                <CardHeader>
+                  <CardTitle className="text-xl flex items-center gap-2">
+                    <Flag className="h-6 w-6 text-red-500" />
+                    🚩 Requieren Seguimiento
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {getNeedsAttention().length > 0 ? (
+                    getNeedsAttention().map((teacher, idx) => (
+                      <div key={teacher.teacher_id} className="flex items-center gap-4 p-4 bg-white rounded-lg shadow border-l-4 border-orange-500">
+                        <AlertTriangle className="h-8 w-8 text-orange-500 flex-shrink-0" />
+                        <div className="flex-1">
+                          <p className="text-lg font-bold">
+                            {teacher.first_name} {teacher.last_name}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            {teacher.pending_grading} pendientes • {teacher.alert_reasons.join(", ")}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            onClick={() => sendReminder(teacher.teacher_id, `${teacher.first_name} ${teacher.last_name}`)}
+                          >
+                            <Mail className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-8">
+                      <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-2" />
+                      <p className="text-lg font-medium">¡Excelente!</p>
+                      <p className="text-sm text-muted-foreground">No hay profesores que requieran atención especial</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Stats mejoradas con barras visuales - Solo en modo avanzado */}
+        {!isSimpleMode && (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <Card className="group hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base font-medium">Total Profesores</CardTitle>
+                  <div className="group relative">
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                      Número total de profesores en el sistema
+                    </div>
+                  </div>
+                </div>
+                <Users className="h-5 w-5 text-blue-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold">{stats.totalTeachers}</div>
+                <div className="mt-2">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span>Activos</span>
+                    <span className="font-medium">{stats.activeTeachers}</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-3">
+                    <div 
+                      className="bg-green-500 h-3 rounded-full transition-all"
+                      style={{ width: `${(stats.activeTeachers / stats.totalTeachers) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="group hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base font-medium">Alertas Activas</CardTitle>
+                  <div className="group relative">
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                      Profesores que requieren seguimiento
+                    </div>
+                  </div>
+                </div>
+                <AlertCircle className="h-5 w-5 text-orange-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold">{stats.teachersWithAlerts}</div>
+                <div className="mt-2">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span>Urgentes</span>
+                    <span className="font-medium text-red-600">{stats.highPriorityAlerts}</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-3">
+                    <div 
+                      className="bg-red-500 h-3 rounded-full transition-all"
+                      style={{ width: stats.teachersWithAlerts > 0 ? `${(stats.highPriorityAlerts / stats.teachersWithAlerts) * 100}%` : '0%' }}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="group hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base font-medium">Tareas Pendientes</CardTitle>
+                  <div className="group relative">
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                      Entregas esperando calificación
+                    </div>
+                  </div>
+                </div>
+                <Clock className="h-5 w-5 text-yellow-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold">{stats.totalPendingGrading}</div>
+                <div className="mt-2">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span>Promedio por profesor</span>
+                    <span className="font-medium">{stats.avgPendingGrading}</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-3">
+                    <div 
+                      className={`h-3 rounded-full transition-all ${stats.avgPendingGrading > 10 ? 'bg-red-500' : stats.avgPendingGrading > 5 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                      style={{ width: `${Math.min((stats.avgPendingGrading / 20) * 100, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="group hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base font-medium">Tareas Semanales</CardTitle>
+                  <div className="group relative">
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                      Tareas publicadas en los últimos 7 días
+                    </div>
+                  </div>
+                </div>
+                <FileText className="h-5 w-5 text-purple-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold">{stats.totalAssignmentsWeek}</div>
+                <p className="text-sm text-muted-foreground mt-1">Últimos 7 días</p>
+              </CardContent>
+            </Card>
+
+            <Card className="group hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base font-medium">Tareas Mensuales</CardTitle>
+                  <div className="group relative">
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                      Tareas publicadas en los últimos 30 días
+                    </div>
+                  </div>
+                </div>
+                <BookOpen className="h-5 w-5 text-indigo-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold">{stats.totalAssignmentsMonth}</div>
+                <p className="text-sm text-muted-foreground mt-1">Últimos 30 días</p>
+              </CardContent>
+            </Card>
+
+            <Card className="group hover:shadow-lg transition-shadow">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <CardTitle className="text-base font-medium">Exámenes Totales</CardTitle>
+                  <div className="group relative">
+                    <HelpCircle className="h-4 w-4 text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                      Exámenes creados por todos los profesores
+                    </div>
+                  </div>
+                </div>
+                <GraduationCap className="h-5 w-5 text-teal-500" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold">{stats.totalExams}</div>
+                <p className="text-sm text-muted-foreground mt-1">Total creados</p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+      {/* Filters and Search */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Filtros de Búsqueda</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex gap-4 flex-wrap">
+            <div className="flex-1 min-w-[250px]">
+              <div className="relative">
+                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar por nombre o email..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-8"
+                />
+              </div>
+            </div>
+            <Select value={activeFilter} onValueChange={(v: any) => setActiveFilter(v)}>
+              <SelectTrigger className="w-[200px]">
+                <SelectValue placeholder="Estado" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos los profesores</SelectItem>
+                <SelectItem value="active">Solo activos</SelectItem>
+                <SelectItem value="needs-attention">Necesitan atención</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={selectedSeverity} onValueChange={setSelectedSeverity}>
+              <SelectTrigger className="w-[200px]">
+                <SelectValue placeholder="Severidad" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas las severidades</SelectItem>
+                <SelectItem value="high">Urgente</SelectItem>
+                <SelectItem value="medium">Atención</SelectItem>
+                <SelectItem value="low">Revisar</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Teachers Table con sistema de semáforo */}
+      <Card>
+        <CardHeader>
+          <div className="flex justify-between items-center">
+            <CardTitle className="text-2xl">👥 Profesores ({filteredTeachers.length})</CardTitle>
+            <div className="flex gap-4 text-sm">
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-green-500"></div>
+                <span>Normal</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-yellow-500"></div>
+                <span>Seguimiento</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-orange-500"></div>
+                <span>Atención</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-red-500"></div>
+                <span>Urgente</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 rounded-full bg-gray-400"></div>
+                <span>Inactivo</span>
+              </div>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="text-base">
+                  <TableHead className="w-8"></TableHead>
+                  <TableHead className="text-base">Profesor</TableHead>
+                  <TableHead className="text-base">Estado</TableHead>
+                  <TableHead className="text-base">Tareas Mes</TableHead>
+                  <TableHead className="text-base">Pendientes</TableHead>
+                  <TableHead className="text-base">Exámenes</TableHead>
+                  <TableHead className="text-base">Última Actividad</TableHead>
+                  <TableHead className="text-base">Acciones</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredTeachers.map((teacher) => {
+                  const statusColor = getStatusColor(teacher);
+                  const statusText = getStatusText(teacher);
+                  
+                  return (
+                    <TableRow key={teacher.teacher_id} className="text-base">
+                      {/* Indicador de semáforo */}
+                      <TableCell>
+                        <div className="relative group">
+                          <div className={`w-6 h-6 rounded-full ${statusColor} shadow-lg`}></div>
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded py-1 px-2 whitespace-nowrap z-10">
+                            {statusText}
+                          </div>
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <div>
+                          <div className="font-bold text-base">
+                            {teacher.first_name} {teacher.last_name}
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            {teacher.email}
+                          </div>
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <div className="text-lg font-bold">{statusText}</div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <div className="space-y-1">
+                          <div className="text-2xl font-bold text-center">
+                            {teacher.assignments_last_month}
+                          </div>
+                          <div className="text-xs text-muted-foreground text-center">
+                            {teacher.assignments_last_week} esta semana
+                          </div>
+                          {teacher.assignments_last_month > 0 && (
+                            <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                              <div 
+                                className="bg-blue-500 h-2 rounded-full"
+                                style={{ width: `${Math.min((teacher.assignments_last_month / 20) * 100, 100)}%` }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <div className="space-y-1">
+                          <Badge
+                            variant={
+                              teacher.pending_grading > 10
+                                ? "destructive"
+                                : teacher.pending_grading > 5
+                                ? "default"
+                                : "secondary"
+                            }
+                            className="text-lg px-3 py-1"
+                          >
+                            {teacher.pending_grading}
+                          </Badge>
+                          <div className="text-xs text-muted-foreground text-center">
+                            {teacher.graded_submissions} calificadas
+                          </div>
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell className="text-center">
+                        <div className="text-xl font-bold">{teacher.total_exams}</div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <div className="text-base">
+                          {teacher.last_grading_date ? (
+                            <>
+                              <div className="font-medium">
+                                {new Date(
+                                  teacher.last_grading_date
+                                ).toLocaleDateString("es-ES", { day: "numeric", month: "short" })}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {Math.floor((Date.now() - new Date(teacher.last_grading_date).getTime()) / (1000 * 60 * 60 * 24))} días
+                              </div>
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">Sin actividad</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <div className="flex gap-2">
+                          <Button
+                            size="lg"
+                            variant={selectedTeacher?.teacher_id === teacher.teacher_id ? "default" : "outline"}
+                            onClick={() => {
+                              if (selectedTeacher?.teacher_id === teacher.teacher_id) {
+                                setSelectedTeacher(null);
+                              } else {
+                                fetchTeacherDetails(teacher);
+                              }
+                            }}
+                          >
+                            {selectedTeacher?.teacher_id === teacher.teacher_id ? "Ocultar" : "📋 Ver Detalles"}
+                          </Button>
+                          {teacher.alert_level && (
+                            <Button
+                              size="lg"
+                              variant="outline"
+                              onClick={() => sendReminder(teacher.teacher_id, `${teacher.first_name} ${teacher.last_name}`)}
+                            >
+                              <Mail className="h-5 w-5" />
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Sistema de Rankings - Solo en modo avanzado */}
+      {!isSimpleMode && (
+        <div className="grid gap-6 md:grid-cols-3">
+          <Card className="border-yellow-300 bg-gradient-to-br from-yellow-50 to-orange-50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <Trophy className="h-6 w-6 text-yellow-600" />
+                🏆 Más Productivos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {[...teachers]
+                  .filter((t) => t.is_active)
+                  .sort((a, b) => b.assignments_last_month - a.assignments_last_month)
+                  .slice(0, 5)
+                  .map((teacher, idx) => (
+                    <div key={teacher.teacher_id} className="flex items-center gap-3 p-3 bg-white rounded-lg shadow-sm">
+                      <div className={`flex items-center justify-center w-8 h-8 rounded-full ${idx === 0 ? 'bg-yellow-500' : idx === 1 ? 'bg-gray-400' : idx === 2 ? 'bg-orange-600' : 'bg-gray-200'} text-white font-bold`}>
+                        {idx + 1}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">
+                          {teacher.first_name} {teacher.last_name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {teacher.assignments_last_month} tareas este mes
+                        </p>
+                      </div>
+                      <div className="text-2xl font-bold text-blue-600">
+                        {teacher.assignments_last_month}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-300 bg-gradient-to-br from-green-50 to-emerald-50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <UserCheck className="h-6 w-6 text-green-600" />
+                ⚡ Más Rápidos Calificando
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {[...teachers]
+                  .filter((t) => t.is_active && t.graded_submissions > 0)
+                  .sort((a, b) => a.pending_grading - b.pending_grading)
+                  .slice(0, 5)
+                  .map((teacher, idx) => (
+                    <div key={teacher.teacher_id} className="flex items-center gap-3 p-3 bg-white rounded-lg shadow-sm">
+                      <div className={`flex items-center justify-center w-8 h-8 rounded-full ${idx === 0 ? 'bg-yellow-500' : idx === 1 ? 'bg-gray-400' : idx === 2 ? 'bg-orange-600' : 'bg-gray-200'} text-white font-bold`}>
+                        {idx + 1}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">
+                          {teacher.first_name} {teacher.last_name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {teacher.graded_submissions} calificadas
+                        </p>
+                      </div>
+                      <div className="text-2xl font-bold text-green-600">
+                        {teacher.pending_grading}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-purple-300 bg-gradient-to-br from-purple-50 to-pink-50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <GraduationCap className="h-6 w-6 text-purple-600" />
+                📝 Más Exámenes Creados
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {[...teachers]
+                  .filter((t) => t.is_active && t.total_exams > 0)
+                  .sort((a, b) => b.total_exams - a.total_exams)
+                  .slice(0, 5)
+                  .map((teacher, idx) => (
+                    <div key={teacher.teacher_id} className="flex items-center gap-3 p-3 bg-white rounded-lg shadow-sm">
+                      <div className={`flex items-center justify-center w-8 h-8 rounded-full ${idx === 0 ? 'bg-yellow-500' : idx === 1 ? 'bg-gray-400' : idx === 2 ? 'bg-orange-600' : 'bg-gray-200'} text-white font-bold`}>
+                        {idx + 1}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">
+                          {teacher.first_name} {teacher.last_name}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {teacher.total_exams} exámenes
+                        </p>
+                      </div>
+                      <div className="text-2xl font-bold text-purple-600">
+                        {teacher.total_exams}
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+      {selectedTeacher && (
+        <Card className="mt-6">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>
+              Detalles de {selectedTeacher.first_name} {selectedTeacher.last_name}
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedTeacher(null)}
+            >
+              Cerrar
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <Tabs defaultValue="overview" className="w-full">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="overview">Resumen</TabsTrigger>
+                <TabsTrigger value="grades">Calificaciones</TabsTrigger>
+                <TabsTrigger value="timeline">Actividad</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="overview" className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Tareas Publicadas</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">
+                        {selectedTeacher.published_assignments}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {selectedTeacher.total_assignments} total
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Pendientes de Calificar</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">
+                        {selectedTeacher.pending_grading}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {selectedTeacher.graded_submissions} ya calificadas
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Exámenes</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">
+                        {selectedTeacher.total_exams}
+                      </div>
+                      <p className="text-xs text-muted-foreground">creados</p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm">Cursos</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-sm">Total de cursos:</span>
+                          <span className="font-medium">
+                            {selectedTeacher.total_courses}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-sm">Asistencia</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-sm">Registros creados:</span>
+                          <span className="font-medium">
+                            {selectedTeacher.attendance_records}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {selectedTeacher.alert_level && (
+                  <Card className="border-orange-200 bg-orange-50">
+                    <CardHeader>
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 text-orange-600" />
+                        Alertas de Atención
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        <Badge variant={getSeverityColor(selectedTeacher.alert_level)}>
+                          {getSeverityLabel(selectedTeacher.alert_level)}
+                        </Badge>
+                        <ul className="list-disc list-inside space-y-1 text-sm">
+                          {selectedTeacher.alert_reasons.map((issue, idx) => (
+                            <li key={idx}>{issue}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </TabsContent>
+
+              <TabsContent value="grades" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">
+                      Distribución de Calificaciones
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {gradeStats && (gradeStats.AD + gradeStats.A + gradeStats.B + gradeStats.C) > 0 ? (
+                      <div className="space-y-4">
+                        {[
+                          { letter: "AD", label: "Logro Destacado", count: gradeStats.AD },
+                          { letter: "A", label: "Logro Esperado", count: gradeStats.A },
+                          { letter: "B", label: "En Proceso", count: gradeStats.B },
+                          { letter: "C", label: "En Inicio", count: gradeStats.C },
+                        ].map((grade) => {
+                          const total = gradeStats.AD + gradeStats.A + gradeStats.B + gradeStats.C;
+                          const percentage = total > 0 ? Math.round((grade.count / total) * 100) : 0;
+                          return (
+                            <div key={grade.letter} className="space-y-2">
+                              <div className="flex justify-between items-center">
+                                <div className="flex items-center gap-2">
+                                  <Badge
+                                    variant={
+                                      grade.letter === "AD"
+                                        ? "default"
+                                        : grade.letter === "A"
+                                        ? "secondary"
+                                        : "outline"
+                                    }
+                                  >
+                                    {grade.letter}
+                                  </Badge>
+                                  <span className="text-sm">{grade.label}</span>
+                                </div>
+                                <div className="text-sm font-medium">
+                                  {grade.count} ({percentage}%)
+                                </div>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div
+                                  className="bg-primary h-2 rounded-full"
+                                  style={{ width: `${percentage}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground text-center py-4">
+                        No hay calificaciones registradas
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="timeline" className="space-y-4">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-sm">
+                      Resumen de Actividad Reciente
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      <div className="flex justify-between p-2 border rounded">
+                        <span className="text-sm">Tareas esta semana:</span>
+                        <span className="font-medium">
+                          {selectedTeacher.assignments_last_week}
+                        </span>
+                      </div>
+                      <div className="flex justify-between p-2 border rounded">
+                        <span className="text-sm">Tareas este mes:</span>
+                        <span className="font-medium">
+                          {selectedTeacher.assignments_last_month}
+                        </span>
+                      </div>
+                      <div className="flex justify-between p-2 border rounded">
+                        <span className="text-sm">Última calificación:</span>
+                        <span className="font-medium">
+                          {selectedTeacher.last_grading_date
+                            ? new Date(selectedTeacher.last_grading_date).toLocaleDateString()
+                            : "Sin registros"}
+                        </span>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          </CardContent>
+        </Card>
+      )}
+      </div>
+    </DashboardLayout>
+  );
+};
+
+export default DirectivoDashboard;

@@ -1553,10 +1553,10 @@ export type Database = {
       }
     }
     Enums: {
-      app_role: "admin" | "teacher" | "student" | "parent" | "tutor"
+      app_role: "admin" | "teacher" | "student" | "parent" | "tutor" | "directivo"
       education_level: "primaria" | "secundaria"
       event_type: "vacation" | "holiday" | "exam" | "meeting" | "other"
-      user_role: "admin" | "teacher" | "student" | "parent" | "tutor"
+      user_role: "admin" | "teacher" | "student" | "parent" | "tutor" | "directivo"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -1684,10 +1684,10 @@ export type CompositeTypes<
 export const Constants = {
   public: {
     Enums: {
-      app_role: ["admin", "teacher", "student", "parent", "tutor"],
+      app_role: ["admin", "teacher", "student", "parent", "tutor", "directivo"],
       education_level: ["primaria", "secundaria"],
       event_type: ["vacation", "holiday", "exam", "meeting", "other"],
-      user_role: ["admin", "teacher", "student", "parent", "tutor"],
+      user_role: ["admin", "teacher", "student", "parent", "tutor", "directivo"],
     },
   },
 } as const

@@ -12,10 +12,11 @@ import {
   Library,
   Brain,
   HelpCircle,
-  Settings
+  Settings,
+  Eye
 } from 'lucide-react';
 
-export type UserRole = 'admin' | 'teacher' | 'student' | 'parent' | 'tutor';
+export type UserRole = 'admin' | 'teacher' | 'student' | 'parent' | 'tutor' | 'directivo';
 
 export interface NavItem {
   title: string;
@@ -39,6 +40,14 @@ export const navigationItems: NavItem[] = [
     url: '/tutor-dashboard',
     icon: Home,
     roles: ['tutor']
+  },
+  
+  // Dashboard Directivo
+  {
+    title: 'Supervisión Docente',
+    url: '/directivo-dashboard',
+    icon: Eye,
+    roles: ['directivo', 'admin']
   },
   
   // Aulas Virtuales
@@ -118,7 +127,7 @@ export const navigationItems: NavItem[] = [
     title: 'Soporte',
     url: '/support',
     icon: HelpCircle,
-    roles: ['admin', 'teacher', 'student', 'parent', 'tutor']
+    roles: ['admin', 'teacher', 'student', 'parent', 'tutor', 'directivo']
   }
 ];
 

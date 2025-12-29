@@ -219,6 +219,7 @@ const Auth = () => {
                       <SelectItem value="teacher">Docente</SelectItem>
                       <SelectItem value="parent">Padre de Familia</SelectItem>
                       <SelectItem value="tutor">Tutor</SelectItem>
+                      <SelectItem value="directivo">Directivo</SelectItem>
                       <SelectItem value="admin">Administrador</SelectItem>
                     </SelectContent>
                   </Select>
