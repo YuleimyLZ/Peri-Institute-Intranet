@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -80,11 +81,10 @@ interface GradeStats {
 }
 
 const DirectivoDashboard = () => {
+  const navigate = useNavigate();
   const [teachers, setTeachers] = useState<TeacherMetrics[]>([]);
   const [filteredTeachers, setFilteredTeachers] = useState<TeacherMetrics[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
-  const [selectedTeacher, setSelectedTeacher] = useState<TeacherMetrics | null>(null);
-  const [gradeStats, setGradeStats] = useState<GradeStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<"all" | "active" | "needs-attention">("all");
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all");
@@ -239,44 +239,6 @@ const DirectivoDashboard = () => {
     }
 
     setFilteredTeachers(filtered);
-  };
-
-  const fetchTeacherDetails = async (teacher: TeacherMetrics) => {
-    setSelectedTeacher(teacher);
-
-    // Fetch grade distribution
-    try {
-      const { data: courses } = await supabase
-        .from("courses")
-        .select("id")
-        .eq("teacher_id", teacher.teacher_id);
-
-      const courseIds = courses?.map((c) => c.id) || [];
-      const { data: assignments } = await supabase
-        .from("assignments")
-        .select("id")
-        .in("course_id", courseIds);
-
-      const assignmentIds = assignments?.map((a) => a.id) || [];
-      const { data: submissions } = await supabase
-        .from("assignment_submissions")
-        .select("score")
-        .in("assignment_id", assignmentIds)
-        .not("score", "is", null);
-
-      const grades: GradeStats = { AD: 0, A: 0, B: 0, C: 0 };
-      submissions?.forEach((s) => {
-        const score = Number(s.score);
-        if (score >= 18) grades.AD++;
-        else if (score >= 14) grades.A++;
-        else if (score >= 11) grades.B++;
-        else grades.C++;
-      });
-
-      setGradeStats(grades);
-    } catch (error) {
-      console.error("Error fetching teacher details:", error);
-    }
   };
 
   // Funciones auxiliares para las nuevas funcionalidades
@@ -889,16 +851,10 @@ const DirectivoDashboard = () => {
                         <div className="flex gap-2">
                           <Button
                             size="lg"
-                            variant={selectedTeacher?.teacher_id === teacher.teacher_id ? "default" : "outline"}
-                            onClick={() => {
-                              if (selectedTeacher?.teacher_id === teacher.teacher_id) {
-                                setSelectedTeacher(null);
-                              } else {
-                                fetchTeacherDetails(teacher);
-                              }
-                            }}
+                            variant="outline"
+                            onClick={() => navigate(`/teacher/${teacher.teacher_id}`)}
                           >
-                            {selectedTeacher?.teacher_id === teacher.teacher_id ? "Ocultar" : "📋 Ver Detalles"}
+                            📋 Ver Detalles
                           </Button>
                           {teacher.alert_level && (
                             <Button
@@ -1028,224 +984,6 @@ const DirectivoDashboard = () => {
             </CardContent>
           </Card>
         </div>
-      )}
-      {selectedTeacher && (
-        <Card className="mt-6">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>
-              Detalles de {selectedTeacher.first_name} {selectedTeacher.last_name}
-            </CardTitle>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setSelectedTeacher(null)}
-            >
-              Cerrar
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <Tabs defaultValue="overview" className="w-full">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="overview">Resumen</TabsTrigger>
-                <TabsTrigger value="grades">Calificaciones</TabsTrigger>
-                <TabsTrigger value="timeline">Actividad</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="overview" className="space-y-4">
-                <div className="grid gap-4 md:grid-cols-3">
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm">Tareas Publicadas</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-2xl font-bold">
-                        {selectedTeacher.published_assignments}
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {selectedTeacher.total_assignments} total
-                      </p>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm">Pendientes de Calificar</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-2xl font-bold">
-                        {selectedTeacher.pending_grading}
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {selectedTeacher.graded_submissions} ya calificadas
-                      </p>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm">Exámenes</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="text-2xl font-bold">
-                        {selectedTeacher.total_exams}
-                      </div>
-                      <p className="text-xs text-muted-foreground">creados</p>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-sm">Cursos</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        <div className="flex justify-between">
-                          <span className="text-sm">Total de cursos:</span>
-                          <span className="font-medium">
-                            {selectedTeacher.total_courses}
-                          </span>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-sm">Asistencia</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        <div className="flex justify-between">
-                          <span className="text-sm">Registros creados:</span>
-                          <span className="font-medium">
-                            {selectedTeacher.attendance_records}
-                          </span>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                {selectedTeacher.alert_level && (
-                  <Card className="border-orange-200 bg-orange-50">
-                    <CardHeader>
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4 text-orange-600" />
-                        Alertas de Atención
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-2">
-                        <Badge variant={getSeverityColor(selectedTeacher.alert_level)}>
-                          {getSeverityLabel(selectedTeacher.alert_level)}
-                        </Badge>
-                        <ul className="list-disc list-inside space-y-1 text-sm">
-                          {selectedTeacher.alert_reasons.map((issue, idx) => (
-                            <li key={idx}>{issue}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-              </TabsContent>
-
-              <TabsContent value="grades" className="space-y-4">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">
-                      Distribución de Calificaciones
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {gradeStats && (gradeStats.AD + gradeStats.A + gradeStats.B + gradeStats.C) > 0 ? (
-                      <div className="space-y-4">
-                        {[
-                          { letter: "AD", label: "Logro Destacado", count: gradeStats.AD },
-                          { letter: "A", label: "Logro Esperado", count: gradeStats.A },
-                          { letter: "B", label: "En Proceso", count: gradeStats.B },
-                          { letter: "C", label: "En Inicio", count: gradeStats.C },
-                        ].map((grade) => {
-                          const total = gradeStats.AD + gradeStats.A + gradeStats.B + gradeStats.C;
-                          const percentage = total > 0 ? Math.round((grade.count / total) * 100) : 0;
-                          return (
-                            <div key={grade.letter} className="space-y-2">
-                              <div className="flex justify-between items-center">
-                                <div className="flex items-center gap-2">
-                                  <Badge
-                                    variant={
-                                      grade.letter === "AD"
-                                        ? "default"
-                                        : grade.letter === "A"
-                                        ? "secondary"
-                                        : "outline"
-                                    }
-                                  >
-                                    {grade.letter}
-                                  </Badge>
-                                  <span className="text-sm">{grade.label}</span>
-                                </div>
-                                <div className="text-sm font-medium">
-                                  {grade.count} ({percentage}%)
-                                </div>
-                              </div>
-                              <div className="w-full bg-gray-200 rounded-full h-2">
-                                <div
-                                  className="bg-primary h-2 rounded-full"
-                                  style={{ width: `${percentage}%` }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground text-center py-4">
-                        No hay calificaciones registradas
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="timeline" className="space-y-4">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">
-                      Resumen de Actividad Reciente
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-2">
-                      <div className="flex justify-between p-2 border rounded">
-                        <span className="text-sm">Tareas esta semana:</span>
-                        <span className="font-medium">
-                          {selectedTeacher.assignments_last_week}
-                        </span>
-                      </div>
-                      <div className="flex justify-between p-2 border rounded">
-                        <span className="text-sm">Tareas este mes:</span>
-                        <span className="font-medium">
-                          {selectedTeacher.assignments_last_month}
-                        </span>
-                      </div>
-                      <div className="flex justify-between p-2 border rounded">
-                        <span className="text-sm">Última calificación:</span>
-                        <span className="font-medium">
-                          {selectedTeacher.last_grading_date
-                            ? new Date(selectedTeacher.last_grading_date).toLocaleDateString()
-                            : "Sin registros"}
-                        </span>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
       )}
       </div>
     </DashboardLayout>

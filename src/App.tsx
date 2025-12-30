@@ -28,6 +28,7 @@ import NotFound from "./pages/NotFound";
 import AdminBulkStudentImport from "./pages/AdminBulkStudentImport";
 import AssignmentDetail from "./pages/AssignmentDetail";
 import StudentDetailView from "./pages/StudentDetailView";
+import TeacherDetailView from "./pages/TeacherDetailView";
 
 const queryClient = new QueryClient();
 
@@ -133,6 +134,11 @@ const App = () => (
             <Route path="/student/:studentId" element={
               <ProtectedRoute>
                 <StudentDetailView />
+              </ProtectedRoute>
+            } />
+            <Route path="/teacher/:teacherId" element={
+              <ProtectedRoute>
+                <TeacherDetailView />
               </ProtectedRoute>
             } />
             <Route path="/admin/bulk-import" element={
