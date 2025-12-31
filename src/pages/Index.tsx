@@ -5,6 +5,7 @@ import { RecentActivity } from "@/components/dashboard/RecentActivity";
 import { StudentCourses } from "@/components/dashboard/StudentCourses";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Notifications } from "@/components/Notifications";
+import { AcademicCalendar } from "@/components/calendar/AcademicCalendar";
 import { BookOpen, FileText, GraduationCap, TrendingUp } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -19,11 +20,27 @@ interface DashboardStats {
 
 const Index = () => {
   const { profile } = useAuth();
-  const [stats, setStats] = useState<DashboardStats>({
-    coursesCount: 0,
-    pendingAssignments: 0,
-    upcomingExams: 0,
-    attendanceRate: 0,
+  const [stats, setStats] = useState<DashboardStats>(() => {
+    // Try to load cached stats
+    const cached = sessionStorage.getItem('dashboardStats');
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {
+        return {
+          coursesCount: 0,
+          pendingAssignments: 0,
+          upcomingExams: 0,
+          attendanceRate: 0,
+        };
+      }
+    }
+    return {
+      coursesCount: 0,
+      pendingAssignments: 0,
+      upcomingExams: 0,
+      attendanceRate: 0,
+    };
   });
   const [loadingStats, setLoadingStats] = useState(true);
 
@@ -37,34 +54,65 @@ const Index = () => {
     try {
       setLoadingStats(true);
 
-      // Get courses count
-      const { count: coursesCount } = await supabase
-        .from('course_enrollments')
-        .select('*', { count: 'exact', head: true })
-        .eq('student_id', profile!.id);
-
-      // Get pending assignments
-      const { data: enrollments } = await supabase
-        .from('course_enrollments')
-        .select('course_id')
-        .eq('student_id', profile!.id);
+      // Execute all queries in parallel for better performance
+      const [
+        { count: coursesCount },
+        { data: enrollments },
+        { data: attendance }
+      ] = await Promise.all([
+        supabase
+          .from('course_enrollments')
+          .select('*', { count: 'exact', head: true })
+          .eq('student_id', profile!.id),
+        supabase
+          .from('course_enrollments')
+          .select('course_id')
+          .eq('student_id', profile!.id),
+        supabase
+          .from('attendance')
+          .select('status')
+          .eq('student_id', profile!.id)
+      ]);
 
       const courseIds = enrollments?.map(e => e.course_id) || [];
 
+      // Calculate attendance rate
+      let attendanceRate = 0;
+      if (attendance && attendance.length > 0) {
+        const presentCount = attendance.filter(a => 
+          a.status === 'present' || a.status === 'late'
+        ).length;
+        attendanceRate = Math.round((presentCount / attendance.length) * 100);
+      }
+
+      // Only fetch assignments and exams if student has courses
       let pendingAssignments = 0;
+      let upcomingExams = 0;
+
       if (courseIds.length > 0) {
-        // Get all assignments in enrolled courses
-        const { data: assignments } = await supabase
-          .from('assignments')
-          .select('id')
-          .in('course_id', courseIds)
-          .eq('is_published', true)
-          .gt('due_date', new Date().toISOString());
+        const [
+          { data: assignments },
+          { count: examsCount }
+        ] = await Promise.all([
+          supabase
+            .from('assignments')
+            .select('id')
+            .in('course_id', courseIds)
+            .eq('is_published', true)
+            .gt('due_date', new Date().toISOString()),
+          supabase
+            .from('exams')
+            .select('*', { count: 'exact', head: true })
+            .in('course_id', courseIds)
+            .eq('is_published', true)
+            .gt('start_time', new Date().toISOString())
+        ]);
+
+        upcomingExams = examsCount || 0;
 
         const assignmentIds = assignments?.map(a => a.id) || [];
 
         if (assignmentIds.length > 0) {
-          // Get submitted assignments
           const { data: submissions } = await supabase
             .from('assignment_submissions')
             .select('assignment_id')
@@ -76,39 +124,20 @@ const Index = () => {
         }
       }
 
-      // Get upcoming exams
-      let upcomingExams = 0;
-      if (courseIds.length > 0) {
-        const { count: examsCount } = await supabase
-          .from('exams')
-          .select('*', { count: 'exact', head: true })
-          .in('course_id', courseIds)
-          .eq('is_published', true)
-          .gt('start_time', new Date().toISOString());
-
-        upcomingExams = examsCount || 0;
-      }
-
-      // Get attendance rate
-      const { data: attendance } = await supabase
-        .from('attendance')
-        .select('status')
-        .eq('student_id', profile!.id);
-
-      let attendanceRate = 0;
-      if (attendance && attendance.length > 0) {
-        const presentCount = attendance.filter(a => 
-          a.status === 'present' || a.status === 'late'
-        ).length;
-        attendanceRate = Math.round((presentCount / attendance.length) * 100);
-      }
-
       setStats({
         coursesCount: coursesCount || 0,
         pendingAssignments,
         upcomingExams,
         attendanceRate,
       });
+      
+      // Cache the stats for faster subsequent loads
+      sessionStorage.setItem('dashboardStats', JSON.stringify({
+        coursesCount: coursesCount || 0,
+        pendingAssignments,
+        upcomingExams,
+        attendanceRate,
+      }));
     } catch (error) {
       console.error('Error fetching dashboard stats:', error);
     } finally {
@@ -219,6 +248,11 @@ const Index = () => {
               {/* Right Column */}
               <div className="space-y-6">
                 <QuickActions />
+                
+                {/* Calendar Section */}
+                <div>
+                  <AcademicCalendar />
+                </div>
               </div>
             </div>
           </div>

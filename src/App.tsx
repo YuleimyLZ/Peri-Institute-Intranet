@@ -29,6 +29,7 @@ import AdminBulkStudentImport from "./pages/AdminBulkStudentImport";
 import AssignmentDetail from "./pages/AssignmentDetail";
 import StudentDetailView from "./pages/StudentDetailView";
 import TeacherDetailView from "./pages/TeacherDetailView";
+import CreateExam from "./pages/CreateExam";
 
 const queryClient = new QueryClient();
 
@@ -54,6 +55,11 @@ const App = () => (
             <Route path="/courses/:id" element={
               <ProtectedRoute>
                 <CourseDetail />
+              </ProtectedRoute>
+            } />
+            <Route path="/courses/:courseId/create-exam" element={
+              <ProtectedRoute>
+                <CreateExam />
               </ProtectedRoute>
             } />
             <Route path="/assignments" element={

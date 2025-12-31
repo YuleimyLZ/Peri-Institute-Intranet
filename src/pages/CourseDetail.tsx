@@ -14,7 +14,6 @@ import { AttendanceManager } from '@/components/course/AttendanceManager';
 import { AttendanceRecords } from '@/components/course/AttendanceRecords';
 import { StudentCourseAttendance } from '@/components/course/StudentCourseAttendance';
 import { CourseScheduleManager } from '@/components/course/CourseScheduleManager';
-import { ExamForm } from '@/components/course/ExamForm';
 import { ExamsList } from '@/components/course/ExamsList';
 import { CourseEditDialog } from '@/components/course/CourseEditDialog';
 import { CourseAssignmentsReview } from '@/components/course/CourseAssignmentsReview';
@@ -62,7 +61,6 @@ export default function CourseDetail() {
   const [course, setCourse] = useState<Course | null>(null);
   const [students, setStudents] = useState<Student[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isExamFormOpen, setIsExamFormOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [additionalTeachers, setAdditionalTeachers] = useState<Teacher[]>([]);
 
@@ -347,7 +345,7 @@ export default function CourseDetail() {
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <CardTitle>Exámenes del Curso</CardTitle>
-                      <Button onClick={() => setIsExamFormOpen(true)} className="bg-gradient-primary shadow-glow">
+                      <Button onClick={() => navigate(`/courses/${course.id}/create-exam`)} className="bg-gradient-primary shadow-glow">
                         <Plus className="h-4 w-4 mr-2" />
                         Crear Examen
                       </Button>
@@ -404,18 +402,6 @@ export default function CourseDetail() {
             <CourseScheduleManager courseId={course.id} canEdit={canEdit || false} />
           </TabsContent>
         </Tabs>
-
-        {/* Exam Form Dialog */}
-        {isExamFormOpen && (
-          <ExamForm
-            courseId={course.id}
-            onClose={() => setIsExamFormOpen(false)}
-            onSuccess={() => {
-              setIsExamFormOpen(false);
-              toast.success('El examen se ha agregado al calendario del curso');
-            }}
-          />
-        )}
 
         {/* Course Edit Dialog */}
         <CourseEditDialog
