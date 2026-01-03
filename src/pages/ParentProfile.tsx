@@ -37,11 +37,12 @@ export default function ParentProfile() {
     try {
       setLoading(true);
 
+      // Changed from .single() to .maybeSingle() to handle 0 rows without error 406
       const { data, error } = await supabase
         .from('profiles')
         .select('first_name, last_name, email, phone')
         .eq('id', user?.id)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
 
@@ -52,9 +53,22 @@ export default function ParentProfile() {
           email: data.email || '',
           phone: data.phone || ''
         });
+      } else {
+        // Profile not found - this might happen if RLS is blocking access
+        console.warn('Profile not found or access denied for user:', user?.id);
+        toast({
+          title: 'Advertencia',
+          description: 'No se pudo cargar el perfil. Por favor, contacta al administrador.',
+          variant: 'destructive'
+        });
       }
     } catch (error) {
       console.error('Error loading profile:', error);
+      toast({
+        title: 'Error',
+        description: 'Error al cargar el perfil',
+        variant: 'destructive'
+      });
     } finally {
       setLoading(false);
     }

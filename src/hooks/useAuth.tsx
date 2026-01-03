@@ -43,17 +43,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        console.log('Auth state changed:', event, 'User:', session?.user?.email);
         setSession(session);
         setUser(session?.user ?? null);
         
         if (session?.user) {
           // Fetch user profile
           setTimeout(async () => {
-            const { data: profileData } = await supabase
+            console.log('Fetching profile for user:', session.user.id);
+            const { data: profileData, error } = await supabase
               .from('profiles')
               .select('*')
               .eq('user_id', session.user.id)
-              .single();
+              .maybeSingle();
+            
+            if (error) {
+              console.error('Error fetching profile:', error);
+              setProfile(null);
+              setLoading(false);
+              return;
+            }
+            
+            console.log('Profile data received:', profileData);
+            console.log('Profile data received:', profileData);
             
             if (profileData) {
               // Fetch user roles from user_roles table
@@ -62,10 +74,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 .select('role')
                 .eq('user_id', session.user.id);
 
+              console.log('Roles data received:', rolesData);
+
               // Get all roles or use profile role as fallback
               const allRoles = rolesData && rolesData.length > 0 
                 ? rolesData.map(r => r.role as UserRole)
                 : [profileData.role as UserRole];
+
+              console.log('All roles:', allRoles);
 
               // Use the first role as the primary role
               const primaryRole = allRoles[0];
@@ -76,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 roles: allRoles
               };
               
+              console.log('Final profile:', profile);
               setProfile(profile);
 
               // Load active role from localStorage or use primary role
@@ -123,11 +140,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session?.user) {
         // Fetch user profile
         setTimeout(async () => {
-          const { data: profileData } = await supabase
+          const { data: profileData, error } = await supabase
             .from('profiles')
             .select('*')
             .eq('user_id', session.user.id)
-            .single();
+            .maybeSingle();
+          
+          if (error) {
+            console.error('Error fetching profile:', error);
+            setProfile(null);
+            setLoading(false);
+            return;
+          }
           
           if (profileData) {
             // Fetch user roles from user_roles table
