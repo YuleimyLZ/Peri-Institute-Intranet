@@ -49,11 +49,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (session?.user) {
           // Fetch user profile
           setTimeout(async () => {
-            const { data: profileData } = await supabase
+            const { data: profileData, error } = await supabase
               .from('profiles')
               .select('*')
               .eq('user_id', session.user.id)
-              .single();
+              .maybeSingle();
+            
+            if (error) {
+              console.error('Error fetching profile:', error);
+              setProfile(null);
+              setLoading(false);
+              return;
+            }
             
             if (profileData) {
               // Fetch user roles from user_roles table
@@ -123,11 +130,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (session?.user) {
         // Fetch user profile
         setTimeout(async () => {
-          const { data: profileData } = await supabase
+          const { data: profileData, error } = await supabase
             .from('profiles')
             .select('*')
             .eq('user_id', session.user.id)
-            .single();
+            .maybeSingle();
+          
+          if (error) {
+            console.error('Error fetching profile:', error);
+            setProfile(null);
+            setLoading(false);
+            return;
+          }
           
           if (profileData) {
             // Fetch user roles from user_roles table
