@@ -35,8 +35,8 @@ const Auth = () => {
     const roleRoutes: Record<string, string> = {
       'parent': '/parent/admin',
       'admin': '/admin/dashboard',
-      'directivo': '/directivo/dashboard',
-      'tutor': '/tutor/dashboard',
+      'directivo': '/directivo-dashboard',
+      'tutor': '/tutor-dashboard',
       'teacher': '/',
       'student': '/'
     };

@@ -169,11 +169,11 @@ const Index = () => {
   }
 
   if (profile?.role === 'directivo') {
-    return <Navigate to="/directivo/dashboard" replace />;
+    return <Navigate to="/directivo-dashboard" replace />;
   }
 
   if (profile?.role === 'tutor') {
-    return <Navigate to="/tutor/dashboard" replace />;
+    return <Navigate to="/tutor-dashboard" replace />;
   }
 
   // Vista original para estudiantes y profesores
