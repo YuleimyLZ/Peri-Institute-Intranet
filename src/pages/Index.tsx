@@ -7,6 +7,7 @@ import { RecentActivity } from "@/components/dashboard/RecentActivity";
 import { StudentCourses } from "@/components/dashboard/StudentCourses";
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
 import { Notifications } from "@/components/Notifications";
+import { AcademicCalendar } from "@/components/calendar/AcademicCalendar";
 import { BookOpen, FileText, GraduationCap, TrendingUp, User, Users } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -23,6 +24,130 @@ interface DashboardStats {
 
 const Index = () => {
   const { profile } = useAuth();
+  const [stats, setStats] = useState<DashboardStats>(() => {
+    // Try to load cached stats
+    const cached = sessionStorage.getItem('dashboardStats');
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {
+        return {
+          coursesCount: 0,
+          pendingAssignments: 0,
+          upcomingExams: 0,
+          attendanceRate: 0,
+        };
+      }
+    }
+    return {
+      coursesCount: 0,
+      pendingAssignments: 0,
+      upcomingExams: 0,
+      attendanceRate: 0,
+    };
+  });
+  const [loadingStats, setLoadingStats] = useState(true);
+
+  useEffect(() => {
+    if (profile?.id) {
+      fetchDashboardStats();
+    }
+  }, [profile]);
+
+  const fetchDashboardStats = async () => {
+    try {
+      setLoadingStats(true);
+
+      // Execute all queries in parallel for better performance
+      const [
+        { count: coursesCount },
+        { data: enrollments },
+        { data: attendance }
+      ] = await Promise.all([
+        supabase
+          .from('course_enrollments')
+          .select('*', { count: 'exact', head: true })
+          .eq('student_id', profile!.id),
+        supabase
+          .from('course_enrollments')
+          .select('course_id')
+          .eq('student_id', profile!.id),
+        supabase
+          .from('attendance')
+          .select('status')
+          .eq('student_id', profile!.id)
+      ]);
+
+      const courseIds = enrollments?.map(e => e.course_id) || [];
+
+      // Calculate attendance rate
+      let attendanceRate = 0;
+      if (attendance && attendance.length > 0) {
+        const presentCount = attendance.filter(a => 
+          a.status === 'present' || a.status === 'late'
+        ).length;
+        attendanceRate = Math.round((presentCount / attendance.length) * 100);
+      }
+
+      // Only fetch assignments and exams if student has courses
+      let pendingAssignments = 0;
+      let upcomingExams = 0;
+
+      if (courseIds.length > 0) {
+        const [
+          { data: assignments },
+          { count: examsCount }
+        ] = await Promise.all([
+          supabase
+            .from('assignments')
+            .select('id')
+            .in('course_id', courseIds)
+            .eq('is_published', true)
+            .gt('due_date', new Date().toISOString()),
+          supabase
+            .from('exams')
+            .select('*', { count: 'exact', head: true })
+            .in('course_id', courseIds)
+            .eq('is_published', true)
+            .gt('start_time', new Date().toISOString())
+        ]);
+
+        upcomingExams = examsCount || 0;
+
+        const assignmentIds = assignments?.map(a => a.id) || [];
+
+        if (assignmentIds.length > 0) {
+          const { data: submissions } = await supabase
+            .from('assignment_submissions')
+            .select('assignment_id')
+            .eq('student_id', profile!.id)
+            .in('assignment_id', assignmentIds);
+
+          const submittedIds = new Set(submissions?.map(s => s.assignment_id) || []);
+          pendingAssignments = assignmentIds.filter(id => !submittedIds.has(id)).length;
+        }
+      }
+
+      setStats({
+        coursesCount: coursesCount || 0,
+        pendingAssignments,
+        upcomingExams,
+        attendanceRate,
+      });
+      
+      // Cache the stats for faster subsequent loads
+      sessionStorage.setItem('dashboardStats', JSON.stringify({
+        coursesCount: coursesCount || 0,
+        pendingAssignments,
+        upcomingExams,
+        attendanceRate,
+      }));
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+    } finally {
+      setLoadingStats(false);
+    }
+  };
 
   // Helpers para mensaje de bienvenida y subtítulo (dentro del componente para acceso a profile)
   const getWelcomeMessage = () => {
@@ -31,59 +156,8 @@ const Index = () => {
   };
 
   const getSubtitle = () => {
-    return 'Portal de Padres - IE La Campiña';
+    return 'Plataforma Educativa - IE La Campiña';
   };
-  const [children, setChildren] = useState<any[]>([]);
-  const [loadingChildren, setLoadingChildren] = useState(false);
-  const [pendingTasksCount, setPendingTasksCount] = useState(0);
-  const [recentAbsencesCount, setRecentAbsencesCount] = useState(0);
-
-  useEffect(() => {
-    if (profile?.role === 'parent' && profile.id) {
-      fetchChildren();
-    }
-  }, [profile]);
-
-  // Fetch hijos y, si hay, tareas pendientes e inasistencias recientes
-  const fetchChildren = async () => {
-    setLoadingChildren(true);
-    const { data, error } = await supabase
-      .from('parent_student_relationships')
-      .select('student:student_id(id, first_name, last_name, academic_year, is_active, grade, section, status)')
-      .eq('parent_id', profile.id);
-    if (!error && data) {
-      const hijos = data.map((rel: any) => rel.student);
-      setChildren(hijos);
-      // Indicador: hijos con tareas pendientes
-      let pending = 0;
-      let absences = 0;
-      for (const child of hijos) {
-        // Tareas pendientes
-        const { data: assignments } = await (supabase
-          .from('assignments' as any)
-          .select('id')
-          .eq('student_id', child.id)
-          .eq('status', 'pending'));
-        if (assignments && assignments.length > 0) pending++;
-        // Inasistencias recientes (últimos 7 días)
-        const { data: attendance } = await (supabase
-          .from('attendance' as any)
-          .select('id')
-          .eq('student_id', child.id)
-          .eq('status', 'absent')
-          .gte('date', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)));
-        if (attendance && attendance.length > 0) absences++;
-      }
-      setPendingTasksCount(pending);
-      setRecentAbsencesCount(absences);
-    } else {
-      setChildren([]);
-      setPendingTasksCount(0);
-      setRecentAbsencesCount(0);
-    }
-    setLoadingChildren(false);
-  };
-
 
   // Redirigir a dashboards específicos según el rol
   if (profile?.role === 'parent') {
@@ -140,28 +214,28 @@ const Index = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <StatsCard
             title="Mis Cursos"
-            value={"..."}
+            value={loadingStats ? "..." : stats.coursesCount}
             icon={BookOpen}
             description="Cursos inscritos"
             color="primary"
           />
           <StatsCard
             title="Tareas Pendientes"
-            value={"..."}
+            value={loadingStats ? "..." : stats.pendingAssignments}
             icon={FileText}
             description="Por entregar próximamente"
             color="accent"
           />
           <StatsCard
             title="Exámenes Próximos"
-            value={"..."}
+            value={loadingStats ? "..." : stats.upcomingExams}
             icon={TrendingUp}
             description="Próximos a rendir"
             color="secondary"
           />
           <StatsCard
             title="Asistencia"
-            value={"..."}
+            value={loadingStats ? "..." : `${stats.attendanceRate}%`}
             icon={GraduationCap}
             description="Tasa de asistencia"
             color="primary"
@@ -175,12 +249,14 @@ const Index = () => {
             <StudentCourses />
             <RecentActivity />
           </div>
+          
           {/* Right Column */}
           <div className="space-y-6">
             <QuickActions />
+            
             {/* Calendar Section */}
             <div>
-              {/* Si tienes AcademicCalendar, inclúyelo aquí */}
+              <AcademicCalendar />
             </div>
           </div>
         </div>

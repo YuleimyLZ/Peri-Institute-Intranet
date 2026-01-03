@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Calendar } from '@/components/ui/calendar';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -6,8 +7,9 @@ import { supabase } from '@/integrations/supabase/client';
 import { format, isSameDay, parseISO } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { toast } from 'sonner';
-import { CalendarIcon, MapPin, Clock } from 'lucide-react';
+import { CalendarIcon, MapPin, Clock, FileText } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useAuth } from '@/hooks/useAuth';
 
 interface AcademicEvent {
   id: string;
@@ -33,10 +35,25 @@ interface CourseEvent {
   };
 }
 
+interface Assignment {
+  id: string;
+  title: string;
+  description: string | null;
+  due_date: string;
+  course_id: string;
+  courses?: {
+    name: string;
+    code: string;
+  };
+}
+
 export function AcademicCalendar() {
+  const { profile } = useAuth();
+  const navigate = useNavigate();
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [academicEvents, setAcademicEvents] = useState<AcademicEvent[]>([]);
   const [courseEvents, setCourseEvents] = useState<CourseEvent[]>([]);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -70,8 +87,43 @@ export function AcademicCalendar() {
 
       if (courseError) throw courseError;
 
+      // Fetch assignments
+      let assignmentsQuery = supabase
+        .from('assignments')
+        .select(`
+          id,
+          title,
+          description,
+          due_date,
+          course_id,
+          courses:course_id (
+            name,
+            code
+          )
+        `)
+        .not('due_date', 'is', null)
+        .order('due_date', { ascending: true });
+
+      // If user is a student, only fetch their assignments
+      if (profile?.role === 'student') {
+        const { data: enrollments } = await supabase
+          .from('course_enrollments')
+          .select('course_id')
+          .eq('user_id', profile.id);
+        
+        if (enrollments && enrollments.length > 0) {
+          const courseIds = enrollments.map(e => e.course_id);
+          assignmentsQuery = assignmentsQuery.in('course_id', courseIds);
+        }
+      }
+
+      const { data: assignmentsData, error: assignmentsError } = await assignmentsQuery;
+
+      if (assignmentsError) throw assignmentsError;
+
       setAcademicEvents(academicData || []);
       setCourseEvents(courseData || []);
+      setAssignments(assignmentsData || []);
     } catch (error: any) {
       console.error('Error fetching events:', error);
       toast.error('Error al cargar los eventos');
@@ -101,10 +153,18 @@ export function AcademicCalendar() {
       return checkDate >= startDate && checkDate <= endDate;
     });
 
-    return { academic, course };
+    const assignmentsForDate = assignments.filter(assignment => {
+      const dueDate = new Date(assignment.due_date);
+      dueDate.setHours(0, 0, 0, 0);
+      const checkDate = new Date(date);
+      checkDate.setHours(0, 0, 0, 0);
+      return dueDate.getTime() === checkDate.getTime();
+    });
+
+    return { academic, course, assignments: assignmentsForDate };
   };
 
-  const selectedEvents = selectedDate ? getEventsForDate(selectedDate) : { academic: [], course: [] };
+  const selectedEvents = selectedDate ? getEventsForDate(selectedDate) : { academic: [], course: [], assignments: [] };
 
   const getEventTypeBadgeVariant = (type: string) => {
     const variants: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
@@ -141,9 +201,15 @@ export function AcademicCalendar() {
       current.setDate(current.getDate() + 1);
     }
   });
+  
+  // Mark dates that have assignments
+  assignments.forEach(assignment => {
+    const dueDate = parseISO(assignment.due_date);
+    datesWithEvents.add(format(dueDate, 'yyyy-MM-dd'));
+  });
 
   return (
-    <div className="grid gap-6 md:grid-cols-2">
+    <div className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>Calendario</CardTitle>
@@ -175,7 +241,7 @@ export function AcademicCalendar() {
             {selectedDate ? format(selectedDate, "d 'de' MMMM, yyyy", { locale: es }) : 'Eventos'}
           </CardTitle>
           <CardDescription>
-            {selectedEvents.academic.length + selectedEvents.course.length} evento(s)
+            {selectedEvents.academic.length + selectedEvents.course.length + selectedEvents.assignments.length} evento(s)
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -186,8 +252,8 @@ export function AcademicCalendar() {
               ))}
             </div>
           ) : (
-            <div className="space-y-4 max-h-[500px] overflow-y-auto">
-              {selectedEvents.academic.length === 0 && selectedEvents.course.length === 0 && (
+            <div className="space-y-4 max-h-[400px] overflow-y-auto">
+              {selectedEvents.academic.length === 0 && selectedEvents.course.length === 0 && selectedEvents.assignments.length === 0 && (
                 <div className="text-center py-8 text-muted-foreground">
                   <CalendarIcon className="h-12 w-12 mx-auto mb-2 opacity-50" />
                   <p>No hay eventos para esta fecha</p>
@@ -261,6 +327,43 @@ export function AcademicCalendar() {
                             <span>{event.location}</span>
                           </div>
                         )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {selectedEvents.assignments.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="font-semibold text-sm text-muted-foreground">Tareas</h3>
+                  {selectedEvents.assignments.map(assignment => (
+                    <div
+                      key={assignment.id}
+                      onClick={() => navigate(`/assignments/${assignment.id}`)}
+                      className="p-4 rounded-lg border bg-card hover:bg-accent/50 hover:border-orange-500 transition-colors border-l-4 border-l-orange-500 cursor-pointer"
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <h4 className="font-semibold">{assignment.title}</h4>
+                          {assignment.courses && (
+                            <p className="text-xs text-muted-foreground">
+                              {assignment.courses.name} ({assignment.courses.code})
+                            </p>
+                          )}
+                        </div>
+                        <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-300">
+                          <FileText className="h-3 w-3 mr-1" />
+                          Tarea
+                        </Badge>
+                      </div>
+                      {assignment.description && (
+                        <p className="text-sm text-muted-foreground mb-2">{assignment.description}</p>
+                      )}
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Clock className="h-3 w-3" />
+                        <span>
+                          Fecha límite: {format(parseISO(assignment.due_date), "HH:mm", { locale: es })}
+                        </span>
                       </div>
                     </div>
                   ))}
