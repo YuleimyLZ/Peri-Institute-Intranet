@@ -90,6 +90,8 @@ const DirectivoDashboard = () => {
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all");
   const [isSimpleMode, setIsSimpleMode] = useState(true);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [selectedPeriod, setSelectedPeriod] = useState<"week" | "month" | "quarter" | "all">("month");
+  const [historicalData, setHistoricalData] = useState<{ total_assignments: number; total_submissions: number }>({ total_assignments: 0, total_submissions: 0 });
 
   useEffect(() => {
     fetchTeacherData();
@@ -113,27 +115,57 @@ const DirectivoDashboard = () => {
 
       const metricsPromises = teachersData.map(async (teacher) => {
         // Get teacher's courses
-        const { data: courses } = await supabase
+        const { data: courses, error: coursesError } = await supabase
           .from("courses")
           .select("id")
           .eq("teacher_id", teacher.id);
 
-        const courseIds = courses?.map((c) => c.id) || [];
-        const weekAgo = new Date();
-        weekAgo.setDate(weekAgo.getDate() - 7);
-        const monthAgo = new Date();
-        monthAgo.setDate(monthAgo.getDate() - 30);
+        if (coursesError) {
+          console.error(`Error fetching courses for ${teacher.first_name}:`, coursesError);
+        }
 
-        // Get assignments metrics
-        const { data: assignments } = await supabase
+        const courseIds = courses?.map((c) => c.id) || [];
+        
+        // Debug: Log para ver si se están obteniendo los cursos
+        if (courseIds.length > 0) {
+          console.log(`${teacher.first_name} ${teacher.last_name}: ${courseIds.length} cursos encontrados`, courseIds);
+        }
+
+        const now = new Date();
+        const weekAgo = new Date();
+        weekAgo.setDate(now.getDate() - 7);
+        const monthAgo = new Date();
+        monthAgo.setDate(now.getDate() - 30);
+        const twoMonthsAgo = new Date();
+        twoMonthsAgo.setDate(now.getDate() - 60);
+        const quarterAgo = new Date();
+        quarterAgo.setDate(now.getDate() - 90);
+
+        // Get ALL assignments metrics (including historical)
+        const { data: assignments, error: assignmentsError } = await supabase
           .from("assignments")
           .select("id, is_published, created_at")
-          .in("course_id", courseIds);
+          .in("course_id", courseIds)
+          .order("created_at", { ascending: false });
+
+        if (assignmentsError) {
+          console.error(`Error fetching assignments for ${teacher.first_name}:`, assignmentsError);
+        }
+
+        // Debug: Log para ver las tareas encontradas
+        if (assignments && assignments.length > 0) {
+          console.log(`${teacher.first_name} ${teacher.last_name}: ${assignments.length} tareas encontradas`);
+        }
 
         const totalAssignments = assignments?.length || 0;
         const publishedAssignments = assignments?.filter((a) => a.is_published).length || 0;
         const assignmentsLastWeek = assignments?.filter((a) => new Date(a.created_at) >= weekAgo).length || 0;
         const assignmentsLastMonth = assignments?.filter((a) => new Date(a.created_at) >= monthAgo).length || 0;
+        const assignmentsPreviousMonth = assignments?.filter((a) => {
+          const createdDate = new Date(a.created_at);
+          return createdDate >= twoMonthsAgo && createdDate < monthAgo;
+        }).length || 0;
+        const assignmentsLastQuarter = assignments?.filter((a) => new Date(a.created_at) >= quarterAgo).length || 0;
 
         // Get submissions metrics
         const assignmentIds = assignments?.map((a) => a.id) || [];
@@ -193,6 +225,8 @@ const DirectivoDashboard = () => {
           published_assignments: publishedAssignments,
           assignments_last_week: assignmentsLastWeek,
           assignments_last_month: assignmentsLastMonth,
+          assignments_previous_month: assignmentsPreviousMonth,
+          assignments_last_quarter: assignmentsLastQuarter,
           pending_grading: pendingGrading,
           graded_submissions: gradedSubmissions,
           total_exams: examsCount || 0,
@@ -200,7 +234,7 @@ const DirectivoDashboard = () => {
           last_grading_date: lastGrading?.graded_at || null,
           alert_level: alertLevel,
           alert_reasons: alertReasons,
-        };
+        } as any;
       });
 
       const metrics = await Promise.all(metricsPromises);
@@ -302,6 +336,36 @@ const DirectivoDashboard = () => {
     return change >= 0 ? `+${change.toFixed(0)}%` : `${change.toFixed(0)}%`;
   };
 
+  const getAssignmentsForPeriod = () => {
+    switch (selectedPeriod) {
+      case "week":
+        return stats.totalAssignmentsWeek;
+      case "month":
+        return stats.totalAssignmentsMonth;
+      case "quarter":
+        return stats.totalAssignmentsQuarter;
+      case "all":
+        return stats.totalAssignmentsAllTime;
+      default:
+        return stats.totalAssignmentsMonth;
+    }
+  };
+
+  const getPeriodLabel = () => {
+    switch (selectedPeriod) {
+      case "week":
+        return "Últimos 7 días";
+      case "month":
+        return "Últimos 30 días";
+      case "quarter":
+        return "Últimos 90 días";
+      case "all":
+        return "Todo el tiempo";
+      default:
+        return "Últimos 30 días";
+    }
+  };
+
   const getSeverityColor = (severity: string | null) => {
     switch (severity) {
       case "high":
@@ -341,6 +405,9 @@ const DirectivoDashboard = () => {
     totalPendingGrading: teachers.reduce((sum, t) => sum + t.pending_grading, 0),
     totalAssignmentsWeek: teachers.reduce((sum, t) => sum + t.assignments_last_week, 0),
     totalAssignmentsMonth: teachers.reduce((sum, t) => sum + t.assignments_last_month, 0),
+    totalAssignmentsPreviousMonth: teachers.reduce((sum, t) => sum + (t.assignments_previous_month || 0), 0),
+    totalAssignmentsQuarter: teachers.reduce((sum, t) => sum + (t.assignments_last_quarter || 0), 0),
+    totalAssignmentsAllTime: teachers.reduce((sum, t) => sum + t.total_assignments, 0),
     totalExams: teachers.reduce((sum, t) => sum + t.total_exams, 0),
   };
 
@@ -390,6 +457,21 @@ const DirectivoDashboard = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
+            {/* Selector de Periodo */}
+            <div className="flex justify-end mb-4">
+              <Select value={selectedPeriod} onValueChange={(v: any) => setSelectedPeriod(v)}>
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder="Seleccionar periodo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="week">Última semana</SelectItem>
+                  <SelectItem value="month">Último mes</SelectItem>
+                  <SelectItem value="quarter">Último trimestre</SelectItem>
+                  <SelectItem value="all">Todo el tiempo</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Estado General */}
             <div className="grid gap-6 md:grid-cols-3">
               <Card className="bg-gradient-to-br from-green-50 to-green-100 border-green-300">
@@ -409,18 +491,27 @@ const DirectivoDashboard = () => {
 
               <Card className="bg-gradient-to-br from-blue-50 to-blue-100 border-blue-300">
                 <CardHeader>
-                  <CardTitle className="text-lg">Tareas del Mes</CardTitle>
+                  <CardTitle className="text-lg">Tareas - {getPeriodLabel()}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="text-5xl font-bold text-blue-700">
-                    {stats.totalAssignmentsMonth}
+                    {getAssignmentsForPeriod()}
                   </div>
                   <div className="flex items-center gap-2 mt-2">
-                    {getTrendIcon(stats.totalAssignmentsMonth, stats.totalAssignmentsWeek * 4)}
+                    {selectedPeriod === "month" && getTrendIcon(stats.totalAssignmentsMonth, stats.totalAssignmentsPreviousMonth)}
                     <span className="text-sm">
-                      {getTrendPercentage(stats.totalAssignmentsMonth, stats.totalAssignmentsWeek * 4)}
+                      {selectedPeriod === "month" 
+                        ? getTrendPercentage(stats.totalAssignmentsMonth, stats.totalAssignmentsPreviousMonth)
+                        : selectedPeriod === "all" 
+                        ? `Total histórico` 
+                        : `En el periodo`}
                     </span>
                   </div>
+                  {selectedPeriod === "all" && stats.totalAssignmentsAllTime > 0 && (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      {stats.totalAssignmentsMonth} en el último mes
+                    </p>
+                  )}
                 </CardContent>
               </Card>
 
@@ -450,22 +541,31 @@ const DirectivoDashboard = () => {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {getTopPerformers().map((teacher, idx) => (
-                    <div key={teacher.teacher_id} className="flex items-center gap-4 p-4 bg-white rounded-lg shadow">
-                      <div className="flex items-center justify-center w-12 h-12 rounded-full bg-yellow-500 text-white font-bold text-xl">
-                        {idx + 1}
+                  {getTopPerformers().length > 0 ? (
+                    getTopPerformers().map((teacher, idx) => (
+                      <div key={teacher.teacher_id} className="flex items-center gap-4 p-4 bg-white rounded-lg shadow">
+                        <div className="flex items-center justify-center w-12 h-12 rounded-full bg-yellow-500 text-white font-bold text-xl">
+                          {idx + 1}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-lg font-bold">
+                            {teacher.first_name} {teacher.last_name}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            {teacher.graded_submissions} tareas calificadas • {teacher.total_assignments} tareas históricas
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Actividad reciente: {teacher.assignments_last_month} este mes
+                          </p>
+                        </div>
+                        <Trophy className="h-8 w-8 text-yellow-500" />
                       </div>
-                      <div className="flex-1">
-                        <p className="text-lg font-bold">
-                          {teacher.first_name} {teacher.last_name}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          {teacher.graded_submissions} tareas calificadas • {teacher.assignments_last_month} tareas este mes
-                        </p>
-                      </div>
-                      <Trophy className="h-8 w-8 text-yellow-500" />
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <p className="text-muted-foreground text-center py-4">
+                      No hay datos de profesores disponibles
+                    </p>
+                  )}
                 </CardContent>
               </Card>
 
@@ -510,6 +610,126 @@ const DirectivoDashboard = () => {
                   )}
                 </CardContent>
               </Card>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Panel de Historial de Actividad */}
+        <Card className="border-2 border-indigo-300 shadow-lg">
+          <CardHeader>
+            <CardTitle className="text-2xl flex items-center gap-2">
+              <TrendingUp className="h-6 w-6 text-indigo-500" />
+              📈 Historial de Actividad
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-4">
+              <Card className={selectedPeriod === "week" ? "border-2 border-indigo-500" : ""}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Última Semana</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-3xl font-bold text-indigo-600">
+                    {stats.totalAssignmentsWeek}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">tareas creadas</p>
+                </CardContent>
+              </Card>
+
+              <Card className={selectedPeriod === "month" ? "border-2 border-indigo-500" : ""}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Último Mes</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-3xl font-bold text-indigo-600">
+                    {stats.totalAssignmentsMonth}
+                  </div>
+                  <div className="flex items-center gap-1 mt-1">
+                    {getTrendIcon(stats.totalAssignmentsMonth, stats.totalAssignmentsPreviousMonth)}
+                    <span className="text-xs text-muted-foreground">
+                      vs mes anterior ({stats.totalAssignmentsPreviousMonth})
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className={selectedPeriod === "quarter" ? "border-2 border-indigo-500" : ""}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Último Trimestre</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-3xl font-bold text-indigo-600">
+                    {stats.totalAssignmentsQuarter}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">últimos 90 días</p>
+                </CardContent>
+              </Card>
+
+              <Card className={selectedPeriod === "all" ? "border-2 border-indigo-500" : ""}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Histórico Total</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-3xl font-bold text-purple-600">
+                    {stats.totalAssignmentsAllTime}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">todas las tareas</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Análisis de tendencia */}
+            <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="font-bold text-lg mb-3">📊 Análisis de Tendencia</h3>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <p className="text-sm font-medium">Comparación Mensual</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    {stats.totalAssignmentsMonth > stats.totalAssignmentsPreviousMonth ? (
+                      <>
+                        <ArrowUp className="h-5 w-5 text-green-600" />
+                        <span className="text-green-600 font-bold">
+                          {getTrendPercentage(stats.totalAssignmentsMonth, stats.totalAssignmentsPreviousMonth)}
+                        </span>
+                        <span className="text-sm text-muted-foreground">de incremento</span>
+                      </>
+                    ) : stats.totalAssignmentsMonth < stats.totalAssignmentsPreviousMonth ? (
+                      <>
+                        <ArrowDown className="h-5 w-5 text-red-600" />
+                        <span className="text-red-600 font-bold">
+                          {getTrendPercentage(stats.totalAssignmentsMonth, stats.totalAssignmentsPreviousMonth)}
+                        </span>
+                        <span className="text-sm text-muted-foreground">de disminución</span>
+                      </>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">Sin cambios respecto al mes anterior</span>
+                    )}
+                  </div>
+                </div>
+                
+                <div>
+                  <p className="text-sm font-medium">Promedio Semanal</p>
+                  <div className="text-2xl font-bold text-indigo-600 mt-1">
+                    {Math.round(stats.totalAssignmentsMonth / 4.3)}
+                  </div>
+                  <p className="text-xs text-muted-foreground">tareas por semana (aprox.)</p>
+                </div>
+              </div>
+
+              {stats.totalAssignmentsMonth === 0 && stats.totalAssignmentsAllTime > 0 && (
+                <div className="mt-4 p-3 bg-yellow-100 border-l-4 border-yellow-500 rounded">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-5 w-5 text-yellow-600 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-yellow-800">⚠️ Atención: Inactividad Detectada</p>
+                      <p className="text-sm text-yellow-700 mt-1">
+                        No hay tareas creadas en el último mes, pero hay {stats.totalAssignmentsAllTime} tareas en el historial total.
+                        Esto puede indicar una disminución en la actividad docente.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -746,7 +966,8 @@ const DirectivoDashboard = () => {
                   <TableHead className="w-8"></TableHead>
                   <TableHead className="text-base">Profesor</TableHead>
                   <TableHead className="text-base">Estado</TableHead>
-                  <TableHead className="text-base">Tareas Mes</TableHead>
+                  <TableHead className="text-base">Tareas Periodo</TableHead>
+                  <TableHead className="text-base">Total Histórico</TableHead>
                   <TableHead className="text-base">Pendientes</TableHead>
                   <TableHead className="text-base">Exámenes</TableHead>
                   <TableHead className="text-base">Última Actividad</TableHead>
@@ -788,10 +1009,13 @@ const DirectivoDashboard = () => {
                       <TableCell>
                         <div className="space-y-1">
                           <div className="text-2xl font-bold text-center">
-                            {teacher.assignments_last_month}
+                            {selectedPeriod === "week" ? teacher.assignments_last_week :
+                             selectedPeriod === "month" ? teacher.assignments_last_month :
+                             selectedPeriod === "quarter" ? teacher.assignments_last_quarter || 0 :
+                             teacher.total_assignments}
                           </div>
                           <div className="text-xs text-muted-foreground text-center">
-                            {teacher.assignments_last_week} esta semana
+                            {getPeriodLabel()}
                           </div>
                           {teacher.assignments_last_month > 0 && (
                             <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
@@ -800,6 +1024,22 @@ const DirectivoDashboard = () => {
                                 style={{ width: `${Math.min((teacher.assignments_last_month / 20) * 100, 100)}%` }}
                               />
                             </div>
+                          )}
+                        </div>
+                      </TableCell>
+
+                      <TableCell>
+                        <div className="space-y-1">
+                          <div className="text-xl font-bold text-center text-purple-600">
+                            {teacher.total_assignments}
+                          </div>
+                          <div className="text-xs text-muted-foreground text-center">
+                            todas las tareas
+                          </div>
+                          {teacher.total_assignments === 0 && (
+                            <Badge variant="outline" className="text-xs">
+                              Sin historial
+                            </Badge>
                           )}
                         </div>
                       </TableCell>
