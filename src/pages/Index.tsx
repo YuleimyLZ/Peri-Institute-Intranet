@@ -214,21 +214,21 @@ const Index = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <StatsCard
             title="Mis Cursos"
-            value={loadingStats ? "..." : stats.coursesCount}
+            value={loadingStats ? "..." : stats.coursesCount.toString()}
             icon={BookOpen}
             description="Cursos inscritos"
             color="primary"
           />
           <StatsCard
             title="Tareas Pendientes"
-            value={loadingStats ? "..." : stats.pendingAssignments}
+            value={loadingStats ? "..." : stats.pendingAssignments.toString()}
             icon={FileText}
             description="Por entregar próximamente"
             color="accent"
           />
           <StatsCard
             title="Exámenes Próximos"
-            value={loadingStats ? "..." : stats.upcomingExams}
+            value={loadingStats ? "..." : stats.upcomingExams.toString()}
             icon={TrendingUp}
             description="Próximos a rendir"
             color="secondary"
