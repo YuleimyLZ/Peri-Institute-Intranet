@@ -10,15 +10,18 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Bell, Search, User, Settings, LogOut } from "lucide-react"
+import { Bell, Search, User, Settings, LogOut, GraduationCap, Menu } from "lucide-react"
 import { Notifications } from "@/components/Notifications";
 import { useEffect, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
-import { SidebarTrigger } from "@/components/ui/sidebar"
 import { useAuth } from "@/hooks/useAuth"
 import { useToast } from "@/hooks/use-toast"
 
-export function Header() {
+interface HeaderProps {
+  showSidebarTrigger?: boolean;
+}
+
+export function Header({ showSidebarTrigger = false }: HeaderProps) {
   const { profile, signOut, activeRole } = useAuth();
   const { toast } = useToast();
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -98,8 +101,6 @@ export function Header() {
   return (
     <header className="border-b border-border/50 bg-gradient-card/80 backdrop-blur-sm">
       <div className="flex h-16 items-center px-6 gap-4">
-        <SidebarTrigger className="hover:bg-primary/10" />
-        
         {/* Search */}
         <div className="flex-1 max-w-sm">
           <div className="relative">

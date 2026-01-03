@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { DashboardLayout } from '@/components/layout/DashboardLayout';
+import { ParentLayout } from '@/components/layout/ParentLayout';
 import { Calendar as CalendarIcon, Plus } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -19,8 +20,11 @@ export default function Calendar() {
     setIsEventDialogOpen(false);
   };
 
+  // Use ParentLayout if user is parent, otherwise DashboardLayout
+  const Layout = profile?.role === 'parent' ? ParentLayout : DashboardLayout;
+
   return (
-    <DashboardLayout>
+    <Layout>
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <div>
@@ -47,6 +51,6 @@ export default function Calendar() {
           />
         )}
       </div>
-    </DashboardLayout>
+    </Layout>
   );
 }

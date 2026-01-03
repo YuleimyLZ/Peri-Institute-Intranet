@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
-import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Courses from "./pages/Courses";
 import CourseDetail from "./pages/CourseDetail";
@@ -18,6 +17,15 @@ import ExamSubmissionsPage from "./pages/ExamSubmissionsPage";
 import ExamGradingPage from "./pages/ExamGradingPage";
 import Profile from "./pages/Profile";
 import AdminDashboard from "./pages/AdminDashboard";
+import AdminUserManagement from "./pages/AdminUserManagement";
+import AdminCourseManagement from "./pages/AdminCourseManagement";
+import Index from "./pages/Index";
+// Parent imports
+import ParentAdminPanel from "./pages/ParentAdminPanel";
+import ParentStudentDetail from "./pages/ParentStudentDetail";
+import ParentNotifications from "./pages/ParentNotifications";
+import ParentProfile from "./pages/ParentProfile";
+import ParentDocuments from "./pages/ParentDocuments";
 import VirtualClassrooms from "./pages/VirtualClassrooms";
 import VirtualClassroomDetail from "./pages/VirtualClassroomDetail";
 import VirtualClassroomCourses from "./pages/VirtualClassroomCourses";
@@ -29,6 +37,7 @@ import AdminBulkStudentImport from "./pages/AdminBulkStudentImport";
 import AssignmentDetail from "./pages/AssignmentDetail";
 import StudentDetailView from "./pages/StudentDetailView";
 import TeacherDetailView from "./pages/TeacherDetailView";
+import ParentStudentAssociation from "./pages/ParentStudentAssociation";
 
 const queryClient = new QueryClient();
 
@@ -56,6 +65,13 @@ const App = () => (
                 <CourseDetail />
               </ProtectedRoute>
             } />
+            {/* Rutas para padres */}
+            <Route path="/parent/admin" element={<ProtectedRoute><ParentAdminPanel /></ProtectedRoute>} />
+            <Route path="/parent/children" element={<ProtectedRoute><ParentStudentAssociation /></ProtectedRoute>} />
+            <Route path="/parent/student/:studentId" element={<ProtectedRoute><ParentStudentDetail /></ProtectedRoute>} />
+            <Route path="/parent/notifications" element={<ProtectedRoute><ParentNotifications /></ProtectedRoute>} />
+            <Route path="/parent/profile" element={<ProtectedRoute><ParentProfile /></ProtectedRoute>} />
+            <Route path="/parent/documents" element={<ProtectedRoute><ParentDocuments /></ProtectedRoute>} />
             <Route path="/assignments" element={
               <ProtectedRoute>
                 <Assignments />
@@ -144,6 +160,16 @@ const App = () => (
             <Route path="/admin/bulk-import" element={
               <ProtectedRoute>
                 <AdminBulkStudentImport />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/courses" element={
+              <ProtectedRoute allowedRoles={["admin"]}>
+                <AdminCourseManagement />
+              </ProtectedRoute>
+            } />
+            <Route path="/admin/users" element={
+              <ProtectedRoute allowedRoles={["admin"]}>
+                <AdminUserManagement />
               </ProtectedRoute>
             } />
             <Route path="/admin/*" element={

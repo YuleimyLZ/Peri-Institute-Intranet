@@ -26,12 +26,79 @@ export interface NavItem {
 }
 
 export const navigationItems: NavItem[] = [
-  // Dashboard
+  // Menú para padres en el orden solicitado
+  {
+    title: 'Panel Padres',
+    url: '/parent/admin',
+    icon: Users,
+    roles: ['parent']
+  },
+  {
+    title: 'Calendario',
+    url: '/parent/calendar',
+    icon: Calendar,
+    roles: ['parent']
+  },
+  {
+    title: 'Mensajes',
+    url: '/parent/messages',
+    icon: MessageSquare,
+    roles: ['parent']
+  },
+  {
+    title: 'Lista de hijos',
+    url: '/parent/children',
+    icon: Users,
+    roles: ['parent']
+  },
+  {
+    title: 'Notificaciones',
+    url: '/parent/notifications',
+    icon: MessageSquare,
+    roles: ['parent']
+  },
+  {
+    title: 'Documentos',
+    url: '/parent/documents',
+    icon: FileText,
+    roles: ['parent']
+  },
+  {
+    title: 'Datos personales',
+    url: '/parent/profile',
+    icon: UserCog,
+    roles: ['parent']
+  },
+  {
+    title: 'Soporte',
+    url: '/parent/support',
+    icon: HelpCircle,
+    roles: ['parent']
+  },
+  // Menú general para otros roles
   {
     title: 'Dashboard',
     url: '/',
     icon: Home,
-    roles: ['admin', 'teacher', 'student', 'parent']
+    roles: ['admin', 'teacher', 'student', 'tutor', 'directivo']
+  },
+  {
+    title: 'Calendario',
+    url: '/calendar',
+    icon: Calendar,
+    roles: ['admin', 'teacher', 'student', 'tutor', 'directivo']
+  },
+  {
+    title: 'Mensajes',
+    url: '/messages',
+    icon: MessageSquare,
+    roles: ['admin', 'teacher', 'student', 'tutor', 'directivo']
+  },
+  {
+    title: 'Soporte',
+    url: '/support',
+    icon: HelpCircle,
+    roles: ['admin', 'teacher', 'student', 'tutor', 'directivo']
   },
   
   // Dashboard Tutor
@@ -82,13 +149,7 @@ export const navigationItems: NavItem[] = [
     roles: ['teacher', 'student']
   },
   
-  // Calendario
-  {
-    title: 'Calendario',
-    url: '/calendar',
-    icon: Calendar,
-    roles: ['admin', 'teacher', 'student', 'parent', 'tutor']
-  },
+  // Calendario (duplicado eliminado)
   
   // Biblioteca
   {
@@ -98,13 +159,7 @@ export const navigationItems: NavItem[] = [
     roles: ['admin', 'teacher', 'student']
   },
   
-  // Mensajes
-  {
-    title: 'Mensajes',
-    url: '/messages',
-    icon: MessageSquare,
-    roles: ['admin', 'teacher', 'student', 'parent', 'tutor']
-  },
+  // Mensajes (duplicado eliminado)
   
   // Compañeros (solo estudiantes)
   {
@@ -122,13 +177,7 @@ export const navigationItems: NavItem[] = [
     roles: ['student']
   },
   
-  // Soporte
-  {
-    title: 'Soporte',
-    url: '/support',
-    icon: HelpCircle,
-    roles: ['admin', 'teacher', 'student', 'parent', 'tutor', 'directivo']
-  }
+  // Soporte (duplicado eliminado)
 ];
 
 export const adminNavigationItems: NavItem[] = [

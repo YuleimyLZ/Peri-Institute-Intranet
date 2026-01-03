@@ -12,7 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
 
 const Auth = () => {
-  const { user, signIn, signUp } = useAuth();
+  const { user, profile, loading: authLoading, signIn, signUp } = useAuth();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,9 +29,20 @@ const Auth = () => {
     document_number: ''
   });
 
-  // Redirect if already authenticated
-  if (user) {
-    return <Navigate to="/" replace />;
+  // Redirect if already authenticated - wait for profile to load
+  if (user && !authLoading && profile) {
+    // Redirect based on role
+    const roleRoutes: Record<string, string> = {
+      'parent': '/parent/admin',
+      'admin': '/admin/dashboard',
+      'directivo': '/directivo/dashboard',
+      'tutor': '/tutor/dashboard',
+      'teacher': '/',
+      'student': '/'
+    };
+    
+    const redirectPath = roleRoutes[profile.role] || '/';
+    return <Navigate to={redirectPath} replace />;
   }
 
   const handleLogin = async (e: React.FormEvent) => {
