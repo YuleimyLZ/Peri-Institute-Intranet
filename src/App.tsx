@@ -39,6 +39,7 @@ import StudentDetailView from "./pages/StudentDetailView";
 import TeacherDetailView from "./pages/TeacherDetailView";
 import ParentStudentAssociation from "./pages/ParentStudentAssociation";
 import CreateExam from "./pages/CreateExam";
+import GradingView from "./pages/GradingView";
 
 const queryClient = new QueryClient();
 
@@ -96,6 +97,11 @@ const App = () => (
             <Route path="/assignment-review/:assignmentId" element={
               <ProtectedRoute>
                 <AssignmentReview />
+              </ProtectedRoute>
+            } />
+            <Route path="/grading/:submissionId" element={
+              <ProtectedRoute>
+                <GradingView />
               </ProtectedRoute>
             } />
             <Route path="/exams" element={

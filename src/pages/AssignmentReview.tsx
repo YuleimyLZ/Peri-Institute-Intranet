@@ -45,7 +45,6 @@ import { EditAssignmentDialog } from '@/components/assignments/EditAssignmentDia
 import { FileUpload } from '@/components/ui/file-upload';
 import PdfAnnotator from '@/components/assignments/PdfAnnotator';
 
-// Las calificaciones ahora se almacenan como letras en la base de datos
 const VALID_GRADES = ['AD', 'A', 'B', 'C'] as const;
 type Grade = typeof VALID_GRADES[number];
 
@@ -78,7 +77,7 @@ interface Submission {
   file_size: number | null;
   mime_type: string | null;
   student_files: any;
-  score: string | null; // (AD, A, B, C)
+  score: string | null;
   feedback: string | null;
   feedback_files: any;
   submitted_at: string;
@@ -119,7 +118,7 @@ const AssignmentReview = () => {
 
   const [feedbackFiles, setFeedbackFiles] = useState<File[]>([]);
 
-  // ✅ PREVIEW (FASE 1)
+  // Preview
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>('');
@@ -140,55 +139,27 @@ const AssignmentReview = () => {
     try {
       setLoading(true);
 
-      // Fetch assignment details
       const { data: assignmentData, error: assignmentError } = await supabase
         .from('assignments')
-        .select(
-          `
+        .select(`
           *,
-          course:courses (
-            id,
-            name,
-            code
-          )
-        `
-        )
+          course:courses (id, name, code)
+        `)
         .eq('id', assignmentId)
         .single();
 
       if (assignmentError) throw assignmentError;
       setAssignment(assignmentData);
 
-      // Fetch submissions
       const { data: submissionsData, error: submissionsError } = await supabase
         .from('assignment_submissions')
-        .select(
-          `
-          id,
-          student_id,
-          content,
-          file_path,
-          file_name,
-          file_size,
-          mime_type,
-          student_files,
-          score,
-          feedback,
-          feedback_files,
-          submitted_at,
-          graded_at,
-          student:profiles!assignment_submissions_student_id_fkey (
-            id,
-            first_name,
-            last_name,
-            email
-          )
-        `
-        )
+        .select(`
+          id, student_id, content, file_path, file_name, file_size, mime_type,
+          student_files, score, feedback, feedback_files, submitted_at, graded_at,
+          student:profiles!assignment_submissions_student_id_fkey (id, first_name, last_name, email)
+        `)
         .eq('assignment_id', assignmentId)
         .order('submitted_at', { ascending: false });
-
-      console.log('Assignment submissions data:', submissionsData);
 
       if (submissionsError) throw submissionsError;
       setSubmissions(submissionsData || []);
@@ -202,8 +173,6 @@ const AssignmentReview = () => {
 
   const handleSelectSubmission = (submission: Submission) => {
     setSelectedSubmission(submission);
-    console.log('Selected submission:', submission);
-    console.log('Submission content:', submission.content);
     setScore(submission.score || '');
     setFeedback(submission.feedback || '');
     setFeedbackFiles([]);
@@ -220,113 +189,60 @@ const AssignmentReview = () => {
 
     if (mt.startsWith('image/')) return true;
     if (mt.includes('pdf')) return true;
-
-    // fallback por extensión si mime_type viene vacío
-    if (fn.endsWith('.png') || fn.endsWith('.jpg') || fn.endsWith('.jpeg') || fn.endsWith('.webp') || fn.endsWith('.gif'))
-      return true;
+    if (fn.endsWith('.png') || fn.endsWith('.jpg') || fn.endsWith('.jpeg') || fn.endsWith('.webp') || fn.endsWith('.gif')) return true;
     if (fn.endsWith('.pdf')) return true;
 
     return false;
   };
 
+  // 🔥 CORRECCIÓN: Usamos storage.createSignedUrl en vez de la Edge Function
   const handleDownloadFile = async (filePath: string, fileName: string) => {
     try {
-      // Generar URL firmada directamente desde Storage
+      if (!filePath) {
+          toast.error("Error: No se encontró la ruta del archivo");
+          return;
+      }
+
+      // Método directo de Supabase Storage (Más robusto)
       const { data, error } = await supabase.storage
         .from('student-submissions')
-        .createSignedUrl(filePath, 60); // 1 minuto es suficiente para la descarga
+        .createSignedUrl(filePath, 60); // URL válida por 60 segundos
 
-      if (error) {
-        console.error('Storage error:', error);
-        throw error;
-      }
+      if (error) throw error;
 
-      if (!data || !data.signedUrl) {
-        throw new Error('No se pudo generar la URL de descarga');
-      }
-
-      // Descargar el archivo
       const link = document.createElement('a');
       link.href = data.signedUrl;
       link.download = fileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-
       toast.success('Descarga iniciada');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error downloading file:', error);
-      toast.error('No se pudo descargar el archivo');
+      toast.error('No se pudo descargar: ' + error.message);
     }
   };
 
-  // ✅ NUEVO: abrir vista previa (sin descargar)
+  // 🔥 CORRECCIÓN: También en Preview
   const handlePreviewFile = async (file: PreviewFile) => {
-    console.log('=== handlePreviewFile called ===');
-    console.log('Full file object:', file);
-    console.log('File details:', {
-      filePath: file.filePath,
-      fileName: file.fileName,
-      mimeType: file.mimeType,
-      fileSize: file.fileSize
-    });
-
-    // El path puede ser válido si:
-    // - Empieza con "feedback/" (archivos de retroalimentación)
-    // - Empieza con "submissions/" (archivos de estudiantes nuevos)
-    // - O contiene un UUID (formato viejo, aceptarlo por ahora)
-    const isValidPath = file.filePath && (
-      file.filePath.startsWith('feedback/') || 
-      file.filePath.startsWith('submissions/') ||
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//.test(file.filePath)
-    );
-
-    if (!isValidPath) {
-      console.error('❌ Path no reconocido:', file.filePath);
-      toast.error('Path de archivo no válido.');
-      return;
-    }
-
-    setPreviewLoading(true);
-    setPreviewFile(file);
-    setPreviewUrl('');
-    setPreviewOpen(true);
-
     try {
-      if (!file.filePath) {
-        throw new Error('No se especificó la ruta del archivo');
-      }
+      setPreviewLoading(true);
+      setPreviewFile(file);
+      setPreviewUrl('');
+      setPreviewOpen(true);
 
-      console.log('✅ Path válido, requesting signed URL from storage...');
-      
-      // Generar URL firmada directamente desde Storage
       const { data, error } = await supabase.storage
         .from('student-submissions')
-        .createSignedUrl(file.filePath, 3600); // 1 hora de validez
+        .createSignedUrl(file.filePath, 60);
 
-      if (error) {
-        console.error('❌ Storage error:', error);
-        console.error('Attempted path:', file.filePath);
-        toast.error(`Error de storage: ${error.message}`);
-        throw error;
-      }
-
-      if (!data || !data.signedUrl) {
-        console.error('❌ No signed URL returned');
-        throw new Error('No se pudo generar la URL firmada');
-      }
-
-      console.log('✅ Signed URL generated:', data.signedUrl);
+      if (error) throw error;
       setPreviewUrl(data.signedUrl);
-      console.log('Preview URL set in state');
-      
-    } catch (error: any) {
-      console.error('❌ Error previewing file:', error);
-      toast.error(`No se pudo abrir: ${error?.message || 'Error desconocido'}`);
+    } catch (error) {
+      console.error('Error previewing file:', error);
+      toast.error('No se pudo abrir la vista previa');
       setPreviewOpen(false);
     } finally {
       setPreviewLoading(false);
-      console.log('=== handlePreviewFile completed ===');
     }
   };
 
@@ -338,27 +254,21 @@ const AssignmentReview = () => {
       return;
     }
 
-    // Validate file sizes
     const maxSize = 5 * 1024 * 1024; // 5MB
     const oversizedFiles = feedbackFiles.filter((file) => file.size > maxSize);
     if (oversizedFiles.length > 0) {
-      toast.error(
-        'Algunos archivos superan los 5MB. Para archivos grandes, te recomendamos subirlos a Google Drive y compartir el enlace en los comentarios.'
-      );
+      toast.error('Algunos archivos superan los 5MB.');
       return;
     }
 
     try {
       setGrading(true);
-
-      // Preservar archivos de retroalimentación existentes
       let feedbackFilesData: FileInfo[] = [];
 
       if (selectedSubmission.feedback_files && Array.isArray(selectedSubmission.feedback_files)) {
         feedbackFilesData = [...selectedSubmission.feedback_files];
       }
 
-      // Upload nuevos archivos de retroalimentación si hay
       if (feedbackFiles.length > 0) {
         for (const file of feedbackFiles) {
           const fileExt = file.name.split('.').pop();
@@ -367,10 +277,7 @@ const AssignmentReview = () => {
 
           const { error: uploadError } = await supabase.storage.from('student-submissions').upload(filePath, file);
 
-          if (uploadError) {
-            console.error('Error uploading file:', uploadError);
-            throw new Error(`Error al subir el archivo ${file.name}`);
-          }
+          if (uploadError) throw new Error(`Error al subir el archivo ${file.name}`);
 
           feedbackFilesData.push({
             file_path: filePath,
@@ -395,14 +302,13 @@ const AssignmentReview = () => {
 
       toast.success('Calificación guardada exitosamente');
       fetchAssignmentData();
-
       setSelectedSubmission(null);
       setScore('');
       setFeedback('');
       setFeedbackFiles([]);
     } catch (error) {
       console.error('Error grading submission:', error);
-      toast.error(error instanceof Error ? error.message : 'Error al guardar la calificación');
+      toast.error('Error al guardar la calificación');
     } finally {
       setGrading(false);
     }
@@ -410,14 +316,10 @@ const AssignmentReview = () => {
 
   const handleDelete = async () => {
     if (!assignmentId) return;
-
     try {
       setDeleting(true);
-
       const { error } = await supabase.from('assignments').delete().eq('id', assignmentId);
-
       if (error) throw error;
-
       toast.success('Tarea eliminada exitosamente');
       navigate('/assignments');
     } catch (error) {
@@ -619,11 +521,11 @@ const AssignmentReview = () => {
                   {selectedSubmission.student_files && selectedSubmission.student_files.length > 0 && (
                     <div>
                       <Label className="text-base font-semibold">Archivos adjuntos del estudiante</Label>
-
                       <div className="mt-2 space-y-2">
                         {selectedSubmission.student_files.map((file: any, index: number) => {
-                          // Normalizar datos - soportar tanto camelCase como snake_case
-                          const filePath = file.file_path || file.filePath;
+                          
+                          // 🔥 CORRECCIÓN: Buscamos en todas las propiedades posibles
+                          const filePath = file.file_path || file.filePath || file.path;
                           const fileName = file.file_name || file.fileName;
                           const fileSize = file.file_size || file.fileSize;
                           const mimeType = file.mime_type || file.mimeType;
@@ -631,29 +533,26 @@ const AssignmentReview = () => {
                           return (
                             <div key={index} className="flex items-center gap-3 p-3 border rounded-lg">
                               <FileText className="w-5 h-5 text-muted-foreground" />
-
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm font-medium truncate">{fileName}</p>
                                 <p className="text-xs text-muted-foreground">{formatKB(fileSize)}</p>
                               </div>
 
-                              {/* ✅ NUEVO: Ver (preview) */}
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() =>
-                                  canPreview(mimeType, fileName)
-                                    ? handlePreviewFile({
-                                        filePath,
-                                        fileName,
-                                        mimeType,
-                                        fileSize
-                                      })
-                                    : toast.message('Este tipo de archivo no se puede previsualizar. Usa Descargar.')
-                                }
+                                onClick={() => {
+                                  if (canPreview(mimeType, fileName) && (mimeType?.toLowerCase().includes('pdf') || fileName?.toLowerCase().endsWith('.pdf'))) {
+                                    navigate(`/grading/${selectedSubmission.id}`);
+                                  } else if (canPreview(mimeType, fileName)) {
+                                    handlePreviewFile({ filePath, fileName, mimeType, fileSize });
+                                  } else {
+                                    toast.message('Este tipo de archivo no se puede previsualizar. Usa Descargar.');
+                                  }
+                                }}
                               >
                                 <Eye className="w-4 h-4 mr-1" />
-                                Ver
+                                {(mimeType?.includes('pdf') || fileName?.endsWith('.pdf')) ? "Calificar" : "Ver"}
                               </Button>
 
                               <Button variant="outline" size="sm" onClick={() => handleDownloadFile(filePath, fileName)}>
@@ -666,47 +565,6 @@ const AssignmentReview = () => {
                       </div>
                     </div>
                   )}
-
-                  {/* Fallback para entregas antiguas con un solo archivo */}
-                  {(!selectedSubmission.student_files || selectedSubmission.student_files.length === 0) &&
-                    selectedSubmission.file_path &&
-                    selectedSubmission.file_name && (
-                      <div>
-                        <Label className="text-base font-semibold">Archivo adjunto</Label>
-                        <div className="mt-2 flex items-center gap-3 p-3 border rounded-lg">
-                          <FileText className="w-5 h-5 text-muted-foreground" />
-                          <span className="text-sm flex-1 truncate">{selectedSubmission.file_name}</span>
-
-                          {/* ✅ NUEVO: Ver (preview) */}
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              canPreview(selectedSubmission.mime_type, selectedSubmission.file_name)
-                                ? handlePreviewFile({
-                                    filePath: selectedSubmission.file_path!,
-                                    fileName: selectedSubmission.file_name!,
-                                    mimeType: selectedSubmission.mime_type,
-                                    fileSize: selectedSubmission.file_size
-                                  })
-                                : toast.message('Este tipo de archivo no se puede previsualizar. Usa Descargar.')
-                            }
-                          >
-                            <Eye className="w-4 h-4 mr-1" />
-                            Ver
-                          </Button>
-
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleDownloadFile(selectedSubmission.file_path!, selectedSubmission.file_name!)}
-                          >
-                            <Download className="w-4 h-4 mr-1" />
-                            Descargar
-                          </Button>
-                        </div>
-                      </div>
-                    )}
 
                   {/* Grading Section */}
                   <div className="space-y-4 border-t pt-6">
@@ -743,117 +601,34 @@ const AssignmentReview = () => {
                     <div>
                       <Label>Archivos adjuntos (opcional)</Label>
                       <p className="text-xs text-muted-foreground mt-1 mb-2">
-                        Máximo 5MB por archivo. Para archivos grandes, sube a Google Drive y comparte el enlace en los comentarios.
+                        Máximo 5MB por archivo.
                       </p>
 
                       <div className="mt-2 space-y-2">
                         {/* Mostrar archivos existentes guardados */}
                         {selectedSubmission.feedback_files && selectedSubmission.feedback_files.length > 0 && (
                           <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Archivos de retroalimentación guardados:</p>
+                            <p className="text-xs font-medium text-muted-foreground">Archivos ya guardados:</p>
                             {selectedSubmission.feedback_files.map((file: any, index: number) => {
-                              const filePath = file.file_path || file.filePath;
+                              
+                              // 🔥 CORRECCIÓN: Aquí también buscamos todas las propiedades
+                              const filePath = file.file_path || file.filePath || file.path;
                               const fileName = file.file_name || file.fileName;
                               const fileSize = file.file_size || file.fileSize;
-                              const mimeType = file.mime_type || file.mimeType || 'application/pdf';
-                              const isValidPath = filePath && filePath.startsWith('feedback/');
 
                               return (
-                                <div
-                                  key={`existing-${index}`}
-                                  className={`flex items-center gap-2 p-2 border rounded-lg ${
-                                    isValidPath 
-                                      ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800' 
-                                      : 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800'
-                                  }`}
-                                >
-                                  <FileText className={`w-4 h-4 ${isValidPath ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`} />
+                                <div key={`existing-${index}`} className="flex items-center gap-2 p-2 border rounded-lg bg-green-50 dark:bg-green-950/20">
+                                  <FileText className="w-4 h-4 text-green-600 dark:text-green-400" />
                                   <div className="flex-1 min-w-0">
                                     <p className="text-sm font-medium truncate">{fileName}</p>
                                     {fileSize && <p className="text-xs text-muted-foreground">{formatKB(fileSize)}</p>}
-                                    {!isValidPath && <p className="text-xs text-red-600 dark:text-red-400">Archivo inválido - eliminar</p>}
                                   </div>
-                                  
-                                  {isValidPath ? (
-                                    <>
-                                      {/* Botón para ver/editar el PDF de feedback */}
-                                      <Button 
-                                        variant="outline" 
-                                        size="sm" 
-                                        onClick={() => handlePreviewFile({
-                                          filePath,
-                                          fileName,
-                                          mimeType,
-                                          fileSize
-                                        })}
-                                      >
-                                        <Eye className="w-4 h-4 mr-1" />
-                                        Editar
-                                      </Button>
-                                      <Button variant="outline" size="sm" onClick={() => handleDownloadFile(filePath, fileName)}>
-                                        <Download className="w-4 h-4" />
-                                      </Button>
-                                    </>
-                                  ) : (
-                                    <Button 
-                                      variant="destructive" 
-                                      size="sm"
-                                      onClick={async () => {
-                                        try {
-                                          // Eliminar de la base de datos
-                                          const updatedFiles = selectedSubmission.feedback_files.filter((_: any, i: number) => i !== index);
-                                          const { error } = await supabase
-                                            .from('assignment_submissions')
-                                            .update({ feedback_files: updatedFiles })
-                                            .eq('id', selectedSubmission.id);
-                                          
-                                          if (error) throw error;
-                                          
-                                          toast.success('Archivo inválido eliminado');
-                                          fetchAssignmentData();
-                                        } catch (error) {
-                                          console.error('Error removing file:', error);
-                                          toast.error('No se pudo eliminar el archivo');
-                                        }
-                                      }}
-                                    >
-                                      <X className="w-4 h-4" />
-                                      Eliminar
-                                    </Button>
-                                  )}
+                                  <Button variant="outline" size="sm" onClick={() => handleDownloadFile(filePath, fileName)}>
+                                    <Download className="w-4 h-4" />
+                                  </Button>
                                 </div>
                               );
                             })}
-                          </div>
-                        )}
-
-                        {/* Upload para nuevos archivos */}
-                        <div>
-                          <p className="text-xs font-medium text-muted-foreground mb-2">Agregar nuevos archivos:</p>
-                          <FileUpload
-                            onFileSelect={(files) => setFeedbackFiles((prev) => [...prev, ...files])}
-                            accept="*/*"
-                            multiple
-                            maxSize={5}
-                          />
-                        </div>
-
-                        {/* Mostrar nuevos archivos que se van a subir */}
-                        {feedbackFiles.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Nuevos archivos a subir:</p>
-                            {feedbackFiles.map((file, index) => (
-                              <div
-                                key={`new-${index}`}
-                                className="flex items-center gap-2 p-2 border rounded-lg bg-blue-50 dark:bg-blue-950/20"
-                              >
-                                <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                                <span className="text-sm flex-1 truncate">{file.name}</span>
-                                <Button variant="ghost" size="sm" onClick={() => removeFeedbackFile(index)}>
-                                  <X className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            ))}
                           </div>
                         )}
                       </div>
@@ -889,7 +664,7 @@ const AssignmentReview = () => {
         </div>
       </div>
 
-      {/* ✅ MODAL DE PREVISUALIZACIÓN (FASE 1) */}
+      {/* MODAL DE PREVISUALIZACIÓN */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         <DialogContent className="max-w-5xl">
           <DialogHeader>
@@ -900,7 +675,6 @@ const AssignmentReview = () => {
 
               {previewFile?.filePath && previewFile?.fileName && (
                 <div className="flex gap-2">
-                  {/* “Abrir/Descargar” por si quiere el visor del navegador */}
                   <Button
                     variant="outline"
                     onClick={() => handleDownloadFile(previewFile.filePath, previewFile.fileName)}
@@ -922,31 +696,6 @@ const AssignmentReview = () => {
 
             {!previewLoading && previewUrl && previewFile && (
               <div className="w-full">
-                {/* PDF */}
-                {canPreview(previewFile.mimeType || null, previewFile.fileName) &&
-                ((previewFile.mimeType || '').toLowerCase().includes('pdf') ||
-                  previewFile.fileName.toLowerCase().endsWith('.pdf')) ? (
-
-                  selectedSubmission ? (
-                    <PdfAnnotator
-                      pdfUrl={previewUrl}
-                      fileName={previewFile.fileName}
-                      mimeType={previewFile.mimeType}
-                      submissionId={selectedSubmission.id}
-                      storageBucket="student-submissions"
-                      storagePath={previewFile.filePath}
-                      onSaved={() => fetchAssignmentData()}
-                      onClose={() => setPreviewOpen(false)}
-                    />
-                  ) : (
-                    <div className="py-10 text-center text-muted-foreground">
-                      Selecciona una entrega antes de anotar.
-                    </div>
-                  )
-
-                ) : null}
-                
-                {/* IMAGEN */}
                 {canPreview(previewFile.mimeType || null, previewFile.fileName) &&
                 ((previewFile.mimeType || '').toLowerCase().startsWith('image/') ||
                   previewFile.fileName.toLowerCase().match(/\.(png|jpg|jpeg|webp|gif)$/)) ? (
@@ -959,7 +708,6 @@ const AssignmentReview = () => {
                   </div>
                 ) : null}
 
-                {/* Si no es PDF/imagen */}
                 {!canPreview(previewFile.mimeType || null, previewFile.fileName) ? (
                   <div className="py-10 text-center text-muted-foreground">
                     Este tipo de archivo no se puede previsualizar. Usa “Descargar”.

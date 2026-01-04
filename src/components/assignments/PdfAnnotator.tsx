@@ -1,605 +1,313 @@
-// src/components/assignments/PdfAnnotator.tsx
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useImperativeHandle, forwardRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { Loader2, Type, Eraser, Pen, RotateCcw, ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
-// PDF.js (legacy para Vite)
+// Imports de PDF
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import pdfWorker from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
-
-// Tipos para las anotaciones
-interface Point {
-  x: number;
-  y: number;
-}
-
-interface Stroke {
-  points: Point[];
-  color: string;
-  size: number;
-  tool: "pen" | "eraser";
-}
-
-type PageStrokes = Record<number, Stroke[]>;
+import { PDFDocument } from "pdf-lib";
 
 type Props = {
-  pdfUrl: string; // signed url / public url
+  pdfUrl: string;
   fileName: string;
-  mimeType?: string | null;
   submissionId: string;
-
-  storageBucket?: string; // default: "student-submissions"
-  storagePath?: string | null; // ruta dentro del bucket del PDF original (recomendado)
-
-  onSaved?: () => void;
-  onClose?: () => void;
+  storageBucket?: string;
+  storagePath?: string | null;
 };
 
+export interface PdfAnnotatorRef {
+  savePdfOnly: () => Promise<boolean>;
+}
+
 function safeKeyName(input: string) {
-  // 1) quita tildes/diacríticos (SIMULACIÓN -> SIMULACION)
-  // 2) reemplaza espacios por _
-  // 3) deja solo [a-zA-Z0-9._-]
-  const noDiacritics = input
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
-  return noDiacritics
-    .replace(/\s+/g, "_")
-    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  return input.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-async function fetchAsPdfBytes(pdfUrl: string) {
-  const res = await fetch(pdfUrl, { mode: "cors" });
-  if (!res.ok) throw new Error(`fetch pdfUrl failed: ${res.status}`);
-
-  const ct = (res.headers.get("content-type") || "").toLowerCase();
-
-  // Si te está devolviendo HTML (por URL expirada o error), PDF.js revienta con InvalidPDFException
-  if (ct.includes("text/html")) {
-    const preview = (await res.text()).slice(0, 120);
-    throw new Error(
-      `La URL no devolvió PDF (parece HTML). Ejemplo: ${preview}`
-    );
-  }
-
-  // a veces viene octet-stream y es PDF igual, no lo bloqueamos duro
-  const buf = await res.arrayBuffer();
-  return buf;
-}
-
-export default function PdfAnnotator({
-  pdfUrl,
-  fileName,
-  submissionId,
-  storageBucket = "student-submissions",
-  storagePath = null,
-  onSaved,
-  onClose,
-}: Props) {
-  // canvas base: página renderizada (no se dibuja encima)
+const PdfAnnotator = forwardRef<PdfAnnotatorRef, Props>(({
+  pdfUrl, fileName, submissionId, storageBucket = "student-submissions", storagePath = null
+}, ref) => {
+  
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  // canvas overlay: anotaciones (sí se dibuja)
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
+  
   const [loading, setLoading] = useState(true);
   const [pdfBytes, setPdfBytes] = useState<ArrayBuffer | null>(null);
   const [pdfDocJs, setPdfDocJs] = useState<any>(null);
   const [pageCount, setPageCount] = useState(1);
   const [pageNum, setPageNum] = useState(1);
 
-  // herramientas
-  const [tool, setTool] = useState<"pen" | "eraser">("pen");
-  const [color, setColor] = useState("#ff0000");
-  const [size, setSize] = useState(3);
-
-  // dibujo
+  const [tool, setTool] = useState<"pen" | "eraser" | "text">("pen");
+  const [color, setColor] = useState("#ff0000"); 
+  const [size, setSize] = useState(2);
+  
+  const [textInput, setTextInput] = useState<{x: number, y: number, text: string, visible: boolean} | null>(null);
   const drawing = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
-  const currentStroke = useRef<Point[]>([]);
+  const [pageOverlays, setPageOverlays] = useState<Record<number, string>>({}); 
 
-  // ✅ Guardar trazos por página (en lugar de dataURL)
-  const [pageStrokes, setPageStrokes] = useState<PageStrokes>({});
+  const SCALE = 1.5; 
 
-  // escala fija (para que overlay y base calcen)
-  const SCALE = 1.35;
+  useImperativeHandle(ref, () => ({
+    savePdfOnly: async () => {
+      return await savePdfComplete();
+    }
+  }));
 
-  // worker
   useEffect(() => {
     (pdfjsLib as any).GlobalWorkerOptions.workerSrc = pdfWorker;
   }, []);
 
-  // ===== CARGA DEL PDF =====
+  // Cargar PDF
   useEffect(() => {
-    let cancelled = false;
-    let timeoutId: NodeJS.Timeout;
-
     async function load() {
       try {
         setLoading(true);
-
-        // Timeout de 30 segundos para evitar cuelgues
-        const timeoutPromise = new Promise((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error('Timeout al cargar PDF')), 30000);
-        });
-
-        // 1) intenta por URL
-        try {
-          const loadPromise = fetchAsPdfBytes(pdfUrl);
-          const buf = await Promise.race([loadPromise, timeoutPromise]) as ArrayBuffer;
-          if (cancelled) return;
-          clearTimeout(timeoutId);
-          
-          // Verificar tamaño del PDF (máximo 10MB para evitar cuelgues)
-          const sizeMB = buf.byteLength / (1024 * 1024);
-          if (sizeMB > 10) {
-            toast.error(`El PDF es demasiado grande (${sizeMB.toFixed(1)}MB). Máximo 10MB para anotaciones.`);
-            setLoading(false);
-            return;
-          }
-          
-          setPdfBytes(buf);
-          return;
-        } catch (e) {
-          clearTimeout(timeoutId);
-          // 2) fallback: storage.download (más estable si tienes storagePath)
-          if (!storagePath) throw e;
-
-          const downloadPromise = supabase.storage
-            .from(storageBucket)
-            .download(storagePath);
-          
-          const { data, error } = await Promise.race([
-            downloadPromise, 
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout descargando PDF')), 30000))
-          ]) as any;
-
-          if (error) throw error;
-
-          const buf = await data.arrayBuffer();
-          if (cancelled) return;
-          
-          // Verificar tamaño del PDF
-          const sizeMB = buf.byteLength / (1024 * 1024);
-          if (sizeMB > 10) {
-            toast.error(`El PDF es demasiado grande (${sizeMB.toFixed(1)}MB). Máximo 10MB para anotaciones.`);
-            setLoading(false);
-            return;
-          }
-          
-          setPdfBytes(buf);
+        let buf: ArrayBuffer;
+        if (storagePath) {
+             const { data, error } = await supabase.storage.from(storageBucket).download(storagePath);
+             if (error) throw error;
+             buf = await data.arrayBuffer();
+        } else {
+            const res = await fetch(pdfUrl);
+            buf = await res.arrayBuffer();
         }
-      } catch (err: any) {
-        console.error("PDF load error:", err);
-        toast.error(`No se pudo cargar el PDF: ${err?.message || 'Error desconocido'}`);
-      } finally {
-        clearTimeout(timeoutId);
-        if (!cancelled) setLoading(false);
-      }
+        setPdfBytes(buf);
+      } catch (err) {
+        toast.error("Error cargando PDF");
+      } finally { setLoading(false); }
     }
-
     load();
-    return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    };
-  }, [pdfUrl, storageBucket, storagePath]);
+  }, [pdfUrl, storagePath, storageBucket]);
 
-  // ===== INIT PDF.JS =====
+  // Init JS PDF (VISOR)
   useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      if (!pdfBytes) return;
-      try {
-        const task = (pdfjsLib as any).getDocument({ data: pdfBytes });
-        const doc = await task.promise;
-        if (cancelled) return;
+    if (!pdfBytes) return;
+    
+    // ✅ CORRECCIÓN 1: Usamos .slice(0) para clonar la memoria y evitar crash
+    const task = (pdfjsLib as any).getDocument({ data: pdfBytes.slice(0) });
+    
+    task.promise.then((doc: any) => {
         setPdfDocJs(doc);
         setPageCount(doc.numPages);
-        setPageNum(1);
-      } catch (err) {
-        console.error("PDF init error:", err);
-        toast.error("No se pudo inicializar el visor del PDF");
-      }
-    }
-
-    init();
-    return () => {
-      cancelled = true;
-    };
+    });
   }, [pdfBytes]);
 
-  // ===== RENDER PÁGINA =====
+  // Renderizar Página
   useEffect(() => {
-    let cancelled = false;
-
-    async function renderPage() {
-      if (!pdfDocJs || !baseCanvasRef.current || !overlayCanvasRef.current)
-        return;
-
-      try {
+    if (!pdfDocJs || !baseCanvasRef.current || !overlayCanvasRef.current) return;
+    const render = async () => {
         const page = await pdfDocJs.getPage(pageNum);
-        if (cancelled) return;
-
         const viewport = page.getViewport({ scale: SCALE });
+        
+        const base = baseCanvasRef.current!;
+        const overlay = overlayCanvasRef.current!;
+        
+        base.width = viewport.width;
+        base.height = viewport.height;
+        overlay.width = viewport.width;
+        overlay.height = viewport.height;
 
-        const base = baseCanvasRef.current;
-        base.width = Math.floor(viewport.width);
-        base.height = Math.floor(viewport.height);
-
-        const overlay = overlayCanvasRef.current;
-        overlay.width = base.width;
-        overlay.height = base.height;
-
-        // render base
         const bctx = base.getContext("2d")!;
         await page.render({ canvasContext: bctx, viewport }).promise;
 
-        // restore strokes (redibujar desde el array de strokes)
         const octx = overlay.getContext("2d")!;
-        octx.clearRect(0, 0, overlay.width, overlay.height);
-
-        const strokes = pageStrokes[pageNum] || [];
-        for (const stroke of strokes) {
-          if (stroke.points.length < 2) continue;
-
-          octx.lineCap = "round";
-          octx.lineJoin = "round";
-          octx.lineWidth = stroke.size;
-
-          if (stroke.tool === "eraser") {
-            octx.globalCompositeOperation = "destination-out";
-            octx.strokeStyle = "rgba(0,0,0,1)";
-          } else {
-            octx.globalCompositeOperation = "source-over";
-            octx.strokeStyle = stroke.color;
-          }
-
-          octx.beginPath();
-          octx.moveTo(stroke.points[0].x, stroke.points[0].y);
-          for (let i = 1; i < stroke.points.length; i++) {
-            octx.lineTo(stroke.points[i].x, stroke.points[i].y);
-          }
-          octx.stroke();
+        octx.clearRect(0,0, overlay.width, overlay.height);
+        
+        if (pageOverlays[pageNum]) {
+            const img = new Image();
+            img.onload = () => octx.drawImage(img, 0, 0);
+            img.src = pageOverlays[pageNum];
         }
-      } catch (err) {
-        console.error("Render page error:", err);
-        toast.error("No se pudo renderizar la página");
-      }
-    }
-
-    renderPage();
-    return () => {
-      cancelled = true;
     };
-  }, [pdfDocJs, pageNum, pageStrokes]);
+    render();
+  }, [pdfDocJs, pageNum, pageOverlays]);
 
-  // ===== helpers dibujo =====
-  const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+  const getPos = (e: React.PointerEvent | React.MouseEvent) => {
+    const rect = overlayCanvasRef.current!.getBoundingClientRect();
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
-  const saveCurrentStroke = () => {
-    if (currentStroke.current.length < 2) return;
+  const saveCurrentOverlay = () => {
+     if(overlayCanvasRef.current) {
+         setPageOverlays(prev => ({ ...prev, [pageNum]: overlayCanvasRef.current!.toDataURL("image/png") }));
+     }
+  }
 
-    const newStroke: Stroke = {
-      points: [...currentStroke.current],
-      color,
-      size,
-      tool,
-    };
-
-    setPageStrokes((prev) => ({
-      ...prev,
-      [pageNum]: [...(prev[pageNum] || []), newStroke],
-    }));
-
-    currentStroke.current = [];
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (textInput && textInput.visible) {
+        finishText();
+        return;
+    }
+    if (tool === "text") {
+        e.preventDefault(); // ✅ CORRECCIÓN 2: Permite que el input de texto funcione
+        const { x, y } = getPos(e);
+        setTextInput({ x, y, text: "", visible: true });
+    } else {
+        drawing.current = true;
+        last.current = getPos(e);
+    }
   };
 
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    drawing.current = true;
-    const pos = getPos(e);
-    last.current = pos;
-    currentStroke.current = [pos];
-  };
-
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawing.current || !overlayCanvasRef.current) return;
-
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (tool === "text" || !drawing.current || !overlayCanvasRef.current || !last.current) return;
     const ctx = overlayCanvasRef.current.getContext("2d")!;
     const p = getPos(e);
-    const prev = last.current;
-    if (!prev) return;
-
-    currentStroke.current.push(p);
-
+    
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.lineWidth = size;
-
-    if (tool === "eraser") {
-      ctx.globalCompositeOperation = "destination-out";
-      ctx.strokeStyle = "rgba(0,0,0,1)";
-    } else {
-      ctx.globalCompositeOperation = "source-over";
-      ctx.strokeStyle = color;
-    }
-
+    ctx.globalCompositeOperation = tool === "eraser" ? "destination-out" : "source-over";
+    ctx.strokeStyle = tool === "eraser" ? "rgba(0,0,0,1)" : color;
     ctx.beginPath();
-    ctx.moveTo(prev.x, prev.y);
+    ctx.moveTo(last.current.x, last.current.y);
     ctx.lineTo(p.x, p.y);
     ctx.stroke();
-
     last.current = p;
   };
 
-  const onPointerUp = () => {
-    if (drawing.current) {
-      saveCurrentStroke();
+  const handlePointerUp = () => {
+    if(drawing.current) {
+        drawing.current = false;
+        last.current = null;
+        saveCurrentOverlay();
     }
-    drawing.current = false;
-    last.current = null;
   };
 
-  const clearOverlay = () => {
-    if (!overlayCanvasRef.current) return;
-    const ctx = overlayCanvasRef.current.getContext("2d")!;
-    ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
-    setPageStrokes((prev) => {
-      const copy = { ...prev };
-      delete copy[pageNum];
-      return copy;
-    });
+  const finishText = () => {
+      if (!textInput || !overlayCanvasRef.current) return;
+      if (textInput.text.trim() !== "") {
+          const ctx = overlayCanvasRef.current.getContext("2d")!;
+          const fontSize = size * 6 + 10;
+          ctx.font = `${fontSize}px sans-serif`; 
+          ctx.fillStyle = color;
+          ctx.globalCompositeOperation = "source-over";
+          ctx.fillText(textInput.text, textInput.x, textInput.y + fontSize);
+          saveCurrentOverlay();
+      }
+      setTextInput(null);
   };
 
-  const goPrev = () => {
-    setPageNum((p) => Math.max(1, p - 1));
-  };
+  const changePage = (delta: number) => {
+      saveCurrentOverlay();
+      const next = pageNum + delta;
+      if(next >= 1 && next <= pageCount) setPageNum(next);
+  }
 
-
-  const goNext = () => {
-    setPageNum((p) => Math.min(pageCount, p + 1));
-  };
-
-  // ===== GUARDAR PDF COMPLETO (enviar a Edge Function) =====
-  const savePdfComplete = async () => {
-    const toastId = "savepdf";
+  // --- FUNCIÓN DE GUARDADO MAESTRA ---
+  const savePdfComplete = async (): Promise<boolean> => {
+    if(!pdfBytes) return false;
     try {
-      // Verificar que haya anotaciones
-      const totalStrokes = Object.values(pageStrokes).reduce((sum, strokes) => sum + strokes.length, 0);
-      if (totalStrokes === 0) {
-        toast.error("No hay anotaciones para guardar", { id: toastId });
-        return;
-      }
+        saveCurrentOverlay(); 
+        
+        // ✅ CORRECCIÓN 3: Usamos .slice(0) TAMBIÉN AQUÍ para evitar "Detached ArrayBuffer"
+        const pdfDoc = await PDFDocument.load(pdfBytes.slice(0)); 
+        const pages = pdfDoc.getPages();
 
-      toast.loading("Renderizando anotaciones...", { id: toastId });
-
-      // Renderizar cada página con anotaciones como PNG
-      const pageImages: Record<string, string> = {};
-      
-      for (const [pageNumStr, strokes] of Object.entries(pageStrokes)) {
-        if (!strokes || strokes.length === 0) continue;
-        
-        const pageNum = parseInt(pageNumStr);
-        const page = await pdfDocJs.getPage(pageNum);
-        const viewport = page.getViewport({ scale: SCALE });
-        
-        // Crear canvas temporal para renderizar esta página
-        const tempCanvas = document.createElement("canvas");
-        tempCanvas.width = viewport.width;
-        tempCanvas.height = viewport.height;
-        const tempCtx = tempCanvas.getContext("2d");
-        if (!tempCtx) continue;
-        
-        // Renderizar PDF en el canvas
-        await page.render({ canvasContext: tempCtx, viewport }).promise;
-        
-        // Dibujar las anotaciones encima
-        for (const stroke of strokes) {
-          if (stroke.points.length < 2) continue;
-          
-          tempCtx.lineCap = "round";
-          tempCtx.lineJoin = "round";
-          tempCtx.lineWidth = stroke.size;
-          
-          if (stroke.tool === "eraser") {
-            tempCtx.globalCompositeOperation = "destination-out";
-            tempCtx.strokeStyle = "rgba(0,0,0,1)";
-          } else {
-            tempCtx.globalCompositeOperation = "source-over";
-            tempCtx.strokeStyle = stroke.color;
-          }
-          
-          tempCtx.beginPath();
-          tempCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
-          for (let i = 1; i < stroke.points.length; i++) {
-            tempCtx.lineTo(stroke.points[i].x, stroke.points[i].y);
-          }
-          tempCtx.stroke();
+        for (const [pStr, dataUrl] of Object.entries(pageOverlays)) {
+            const pIndex = Number(pStr) - 1;
+            if (pIndex < 0 || pIndex >= pages.length) continue;
+            const pngImage = await pdfDoc.embedPng(dataUrl);
+            const page = pages[pIndex];
+            page.drawImage(pngImage, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
         }
+
+        const pdfBytesFinal = await pdfDoc.save();
+        const blob = new Blob([pdfBytesFinal], { type: "application/pdf" });
+        const safeName = safeKeyName(fileName);
+        const path = `feedback/annotated_${Date.now()}_${safeName}`;
         
-        // Convertir a PNG dataURL
-        pageImages[pageNumStr] = tempCanvas.toDataURL("image/png");
-      }
+        // Subir archivo
+        const { error: upErr } = await supabase.storage.from(storageBucket).upload(path, blob);
+        if(upErr) throw upErr;
 
-      toast.loading("Enviando al servidor...", { id: toastId });
+        // ✅ CORRECCIÓN 4: Agregamos fileSize y file_size al metadata
+        // Esto soluciona el problema de "0.00 KB" en la vista del alumno
+        const newFile = {
+            bucket: storageBucket,
+            path: path,
+            fileName: `Corregido_${safeName}`,
+            mimeType: "application/pdf",
+            fileSize: blob.size,    // IMPORTANTE
+            file_size: blob.size,   // IMPORTANTE (por si acaso el backend usa este formato)
+            createdAt: new Date().toISOString()
+        };
 
-      const requestBody = {
-        storageBucket,
-        storagePath,
-        pdfUrl: !storagePath ? pdfUrl : undefined,
-        fileName,
-        submissionId,
-        pageImages,
-      };
-
-      console.log("Sending to Edge Function:", { 
-        fileName, 
-        submissionId, 
-        pageCount: Object.keys(pageImages).length
-      });
-
-      // Llamar a la Edge Function
-      const { data, error } = await supabase.functions.invoke("annotate-pdf", {
-        body: requestBody,
-      });
-
-      console.log("Edge Function response:", { data, error });
-
-      if (error) {
-        // Intentar leer el cuerpo de la respuesta para obtener el mensaje de error específico
-        let errorMessage = error.message;
+        const { data: currentData } = await supabase.from("assignment_submissions").select("feedback_files").eq("id", submissionId).single();
+        const existingFiles = (currentData?.feedback_files as any[]) || [];
         
-        if (error.context && error.context instanceof Response) {
-          try {
-            const responseText = await error.context.text();
-            console.error("Edge Function response body:", responseText);
-            
-            try {
-              const responseJson = JSON.parse(responseText);
-              if (responseJson.error) {
-                errorMessage = responseJson.error;
-              }
-              console.error("Edge Function error JSON:", responseJson);
-            } catch (e) {
-              console.error("Could not parse error as JSON");
-            }
-          } catch (e) {
-            console.error("Could not read response body:", e);
-          }
-        }
-        
-        console.error("Edge Function error details:", {
-          message: error.message,
-          name: error.name,
-          errorMessage,
-          data
-        });
-        
-        throw new Error(`Edge Function error: ${errorMessage}`);
-      }
+        const { error: dbErr } = await supabase.from("assignment_submissions")
+            .update({ feedback_files: [...existingFiles, newFile] }).eq("id", submissionId);
 
-      if (!data) {
-        throw new Error("No data returned from Edge Function");
-      }
-
-      if (!data.success) {
-        throw new Error(data.error || "Error desconocido al procesar PDF");
-      }
-
-      const sizeMB = (data.fileSize / (1024 * 1024)).toFixed(2);
-      toast.success(
-        `✅ PDF guardado exitosamente con ${data.annotatedCount} página(s) anotada(s) (${sizeMB}MB). El alumno puede verlo ahora.`,
-        { 
-          id: toastId,
-          duration: 5000 
-        }
-      );
-
-      // ✅ Limpiar las anotaciones después de guardar exitosamente
-      // Esto permite que el profesor pueda abrir de nuevo y hacer correcciones adicionales sin conflictos
-      setPageStrokes({});
-      
-      if (onSaved) onSaved();
-      
-      // Cerrar el modal automáticamente después de guardar
-      if (onClose) {
-        setTimeout(() => onClose(), 1000);
-      }
-    } catch (err: any) {
-      console.error("Save PDF error:", err);
-      toast.error(`❌ Error al guardar: ${err?.message || "Error desconocido"}`, {
-        id: toastId,
-        duration: 7000,
-      });
+        if(dbErr) throw dbErr;
+        return true;
+    } catch(err: any) {
+        console.error(err);
+        toast.error("Error generando PDF: " + err.message);
+        return false;
     }
   };
-    
-  
 
-  if (loading) {
-    return <div className="py-10 text-center text-muted-foreground">Cargando PDF…</div>;
-  }
-
-  if (!pdfDocJs) {
-    return <div className="py-10 text-center text-muted-foreground">No se pudo abrir el PDF.</div>;
-  }
+  if (loading) return <div className="flex justify-center p-10"><Loader2 className="animate-spin" /></div>;
 
   return (
-    <div className="w-full">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 p-3 border rounded mb-3 bg-background">
-        <Button variant={tool === "pen" ? "default" : "outline"} onClick={() => setTool("pen")}>
-          Lápiz
-        </Button>
-        <Button variant={tool === "eraser" ? "default" : "outline"} onClick={() => setTool("eraser")}>
-          Borrador
-        </Button>
-
-        <div className="flex items-center gap-2 ml-2">
-          <span className="text-sm">Grosor</span>
-          <input
-            type="range"
-            min={1}
-            max={16}
-            value={size}
-            onChange={(e) => setSize(Number(e.target.value))}
-          />
-          <span className="text-sm">{size}px</span>
+    <div className="flex flex-col h-full w-full bg-slate-50 relative">
+      <div className="bg-white border-b px-4 py-2 flex items-center justify-between shadow-sm z-10 sticky top-0">
+        <div className="flex items-center gap-2">
+            <Button variant={tool === "pen" ? "default" : "ghost"} size="sm" onClick={() => setTool("pen")} title="Lápiz"><Pen className="w-4 h-4" /></Button>
+            <Button variant={tool === "text" ? "default" : "ghost"} size="sm" onClick={() => setTool("text")} title="Texto"><Type className="w-4 h-4" /></Button>
+            <Button variant={tool === "eraser" ? "default" : "ghost"} size="sm" onClick={() => setTool("eraser")} title="Borrador"><Eraser className="w-4 h-4" /></Button>
+            <div className="h-6 w-px bg-gray-300 mx-2" />
+            <input type="color" value={color} onChange={e => setColor(e.target.value)} className="h-8 w-8 cursor-pointer rounded" />
+            <Button variant="ghost" size="sm" onClick={() => {
+                const ctx = overlayCanvasRef.current?.getContext("2d");
+                if(ctx && overlayCanvasRef.current) ctx.clearRect(0,0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+                setPageOverlays(prev => { const n = {...prev}; delete n[pageNum]; return n; });
+            }} title="Limpiar Página"><RotateCcw className="w-4 h-4" /></Button>
         </div>
-
-        <div className="flex items-center gap-2 ml-2">
-          <span className="text-sm">Color</span>
-          <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
+        <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => changePage(-1)} disabled={pageNum <= 1}><ChevronLeft className="w-4 h-4" /></Button>
+            <span className="text-sm font-medium w-12 text-center">{pageNum} / {pageCount}</span>
+            <Button variant="outline" size="sm" onClick={() => changePage(1)} disabled={pageNum >= pageCount}><ChevronRight className="w-4 h-4" /></Button>
         </div>
-
-        <div className="flex items-center gap-2 ml-auto">
-          <Button variant="outline" onClick={goPrev}>
-            ← Página
-          </Button>
-          <span className="text-sm font-medium">
-            {pageNum}/{pageCount}
-          </span>
-          <Button variant="outline" onClick={goNext}>
-            Página →
-          </Button>
-        </div>
-
-        <Button className="bg-gradient-primary" onClick={savePdfComplete}>
-          Guardar (PDF completo)
-        </Button>
-
-        <Button variant="outline" onClick={clearOverlay}>
-          Limpiar
-        </Button>
-
-        {onClose && (
-          <Button variant="outline" onClick={onClose}>
-            Cerrar
-          </Button>
-        )}
       </div>
-
-      {/* Viewer */}
-      <div className="relative w-full overflow-auto border rounded bg-muted/10">
-        <canvas ref={baseCanvasRef} className="block mx-auto" />
-        <canvas
-          ref={overlayCanvasRef}
-          className="absolute left-1/2 top-0 -translate-x-1/2"
-          style={{ touchAction: "none" }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-        />
+      
+      <div className="flex-1 overflow-auto bg-slate-200 flex justify-center p-8">
+        <div className="relative shadow-lg border bg-white" style={{ width: 'fit-content', height: 'fit-content' }}>
+            <canvas ref={baseCanvasRef} className="block" />
+            <canvas 
+                ref={overlayCanvasRef}
+                className={`absolute inset-0 touch-none ${tool === 'text' ? 'cursor-text' : 'cursor-crosshair'}`}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerLeave={handlePointerUp}
+            />
+            {textInput && textInput.visible && (
+                <input
+                    autoFocus
+                    value={textInput.text}
+                    onChange={(e) => setTextInput({ ...textInput, text: e.target.value })}
+                    onKeyDown={(e) => e.key === "Enter" && finishText()}
+                    onBlur={finishText}
+                    style={{
+                        position: 'absolute',
+                        left: textInput.x,
+                        top: textInput.y,
+                        color: color,
+                        fontSize: `${size * 6 + 10}px`,
+                        background: 'transparent',
+                        border: '1px dashed #3b82f6',
+                        outline: 'none',
+                        minWidth: '50px'
+                    }}
+                />
+            )}
+        </div>
       </div>
-
-      <p className="text-xs text-muted-foreground mt-2">
-        Flujo: el profe anota → “Guardar (PDF completo)” → se sube al Storage y queda asociado a la entrega para que el alumno lo vea luego.
-      </p>
     </div>
   );
-}
+});
 
+export default PdfAnnotator;
