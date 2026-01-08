@@ -40,7 +40,7 @@ export function AttendanceRecords({ courseId }: AttendanceRecordsProps) {
       setLoading(true);
       
       const response = await fetch(
-        `https://dvucxenjdfxxqtekhqfg.supabase.co/functions/v1/get-course-attendance?course_id=${courseId}`,
+        `https://bnbtmubibnupttnnhijr.supabase.co/functions/v1/get-course-attendance?course_id=${courseId}`,
         {
           headers: {
             Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
